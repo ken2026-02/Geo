@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand: #7850EE;
+  --color-brand-light: #F2EDFF;
+}
+
+@layer base {
+  :root {
+    --module-accent: var(--color-brand);
+    --module-accent-bg: var(--color-brand-light);
+  }
+
+  /* Specific requested themes */
+  .theme-bearing-capacity { --module-accent: #E67E00; --module-accent-bg: #FFF3E0; }
+  .theme-earth-pressure { --module-accent: #C54A00; --module-accent-bg: #FBE9E7; }
+  .theme-settlement-screening { --module-accent: #8E00D4; --module-accent-bg: #F3E5F5; }
+  .theme-retaining-wall-check { --module-accent: #2A7D73; --module-accent-bg: #E0F2F1; }
+  .theme-soil-slope-stability { --module-accent: #158A5A; --module-accent-bg: #E8F5E9; }
+  .theme-soil-engineering-brain { --module-accent: #5B2BD6; --module-accent-bg: #EDE7F6; }
+
+  /* Procedurally defined themes for remaining modules */
+  .theme-diagnostics { --module-accent: #3F51B5; --module-accent-bg: #E8EAF6; }
+  .theme-engineering-knowledge { --module-accent: #00838F; --module-accent-bg: #E0F7FA; }
+  .theme-entry-detail { --module-accent: #455A64; --module-accent-bg: #ECEFF1; }
+  .theme-entry-edit { --module-accent: #455A64; --module-accent-bg: #ECEFF1; }
+  .theme-gsi-assessment { --module-accent: #0277BD; --module-accent-bg: #E1F5FE; }
+  .theme-handover { --module-accent: #00695C; --module-accent-bg: #E0F2F1; }
+  .theme-investigation-log { --module-accent: #F9A825; --module-accent-bg: #FFFDE7; }
+  .theme-location-detail { --module-accent: #6D4C41; --module-accent-bg: #EFEBE9; }
+  .theme-location-edit { --module-accent: #6D4C41; --module-accent-bg: #EFEBE9; }
+  .theme-location-overview { --module-accent: #6D4C41; --module-accent-bg: #EFEBE9; }
+  .theme-location-timeline { --module-accent: #6D4C41; --module-accent-bg: #EFEBE9; }
+  .theme-locations { --module-accent: #6D4C41; --module-accent-bg: #EFEBE9; }
+  .theme-mapping { --module-accent: #2E7D32; --module-accent-bg: #E8F5E9; }
+  .theme-photo-gallery { --module-accent: #512DA8; --module-accent-bg: #EDE7F6; }
+  .theme-projects { --module-accent: #1565C0; --module-accent-bg: #E3F2FD; }
+  .theme-quick-log { --module-accent: #FF8F00; --module-accent-bg: #FFF8E1; }
+  .theme-records { --module-accent: #424242; --module-accent-bg: #F5F5F5; }
+  .theme-rock-classification { --module-accent: #4527A0; --module-accent-bg: #EDE7F6; }
+  .theme-rock-engineering-assistant { --module-accent: #283593; --module-accent-bg: #E8EAF6; }
+  .theme-rock-engineering-brain { --module-accent: #1565C0; --module-accent-bg: #E3F2FD; }
+  .theme-rock-engineering-dashboard { --module-accent: #0277BD; --module-accent-bg: #E1F5FE; }
+  .theme-rock-mass-rating { --module-accent: #00695C; --module-accent-bg: #E0F2F1; }
+  .theme-slope-assessment { --module-accent: #C62828; --module-accent-bg: #FFEBEE; }
+  .theme-site-logging { --module-accent: #4F46E5; --module-accent-bg: #E0E7FF; }
+  .theme-soil-engineering-dashboard { --module-accent: #5B2BD6; --module-accent-bg: #EDE7F6; }
+  .theme-stereonet-view { --module-accent: #283593; --module-accent-bg: #E8EAF6; }
+  .theme-structural-assessment { --module-accent: #4527A0; --module-accent-bg: #EDE7F6; }
+  .theme-support-design { --module-accent: #00838F; --module-accent-bg: #E0F7FA; }
+  .theme-support-design-calculator { --module-accent: #0277BD; --module-accent-bg: #E1F5FE; }
+  .theme-wedge-fos-view { --module-accent: #C62828; --module-accent-bg: #FFEBEE; }
+  .theme-client-delivery { --module-accent: #0288D1; --module-accent-bg: #E1F5FE; }
+  .theme-quick-observations { --module-accent: #7B1FA2; --module-accent-bg: #F3E5F5; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "GeoField AU",
+  "description": "Offline-first geotechnical site support app for Australian road infrastructure projects.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
