@@ -54,6 +54,17 @@ const toNumberOrNull = (v: string): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+// For field typing on mobile, avoid coercing numeric inputs on every keystroke.
+// Controlled numeric inputs that immediately coerce "0." -> 0 make it impossible to type "0.1".
+const parseNumberOrNull = (raw: string): number | null => {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  // Allow in-progress typing; we commit on blur/save, not on each keypress.
+  if (s === '-' || s === '.' || s === '-.' || s.endsWith('.')) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+};
+
 const safeJsonStringify = (obj: any) => {
   try {
     return JSON.stringify(obj, null, 2);
@@ -78,32 +89,6 @@ const parseJsonObject = (text: string): Record<string, any> | null => {
   } catch {
     return null;
   }
-};
-
-const computeTorVarianceClass = (opts: {
-  expectedMin: number | null;
-  expectedMax: number | null;
-  actualTor: number | null;
-}):
-  | 'within_range'
-  | 'slightly_deeper'
-  | 'significantly_deeper'
-  | 'shallower_than_expected'
-  | 'inconsistent_with_reference' => {
-  const min = opts.expectedMin;
-  const max = opts.expectedMax;
-  const actual = opts.actualTor;
-  if (actual == null) return 'inconsistent_with_reference';
-  if (min == null && max == null) return 'inconsistent_with_reference';
-  const lo = min != null ? min : max != null ? max : null;
-  const hi = max != null ? max : min != null ? min : null;
-  if (lo == null || hi == null) return 'inconsistent_with_reference';
-  const a = actual;
-  if (a >= Math.min(lo, hi) && a <= Math.max(lo, hi)) return 'within_range';
-  if (a < Math.min(lo, hi)) return 'shallower_than_expected';
-  const deeper = a - Math.max(lo, hi);
-  // Thresholds: field-friendly, can be tuned later without schema change.
-  return deeper <= 0.5 ? 'slightly_deeper' : 'significantly_deeper';
 };
 
 const DRILLING_RESPONSES: Array<{ id: string; label: string }> = [
@@ -284,6 +269,8 @@ export const SiteLoggingElement: React.FC = () => {
     'Setup' | 'Reference' | 'Logging' | 'Interpretation' | 'Verification' | 'Closeout'
   >('Logging');
   const [referenceAdminMode, setReferenceAdminMode] = useState(false);
+  const [showReferenceNotes, setShowReferenceNotes] = useState(false);
+  const [showVerificationAdvanced, setShowVerificationAdvanced] = useState(false);
 
   const [designType, setDesignType] = useState('Default');
   const [showDesignTypeOverride, setShowDesignTypeOverride] = useState(false);
@@ -322,6 +309,16 @@ export const SiteLoggingElement: React.FC = () => {
     test_note: '',
   });
   const [showSuitabilitySetup, setShowSuitabilitySetup] = useState(false);
+  const [showSetupAdvanced, setShowSetupAdvanced] = useState(false);
+
+  // Raw inputs for pile essentials to allow typing decimals like "0.1" without being coerced to "0".
+  const [pileGroundRlRaw, setPileGroundRlRaw] = useState('');
+  const [pileHoleDiaRaw, setPileHoleDiaRaw] = useState('');
+  const [pileBaseCasingRaw, setPileBaseCasingRaw] = useState('');
+  const [pileMinPlungeRaw, setPileMinPlungeRaw] = useState('');
+  const [pileMinSocketRaw, setPileMinSocketRaw] = useState('');
+  const [pileMinAnchHwRaw, setPileMinAnchHwRaw] = useState('');
+  const [pileMinAnchMwRaw, setPileMinAnchMwRaw] = useState('');
 
   const [records, setRecords] = useState<SiteDrillingRecord[]>([]);
   const [activeRecordId, setActiveRecordId] = useState<string>('');
@@ -505,6 +502,7 @@ export const SiteLoggingElement: React.FC = () => {
     return 'Anchor';
   }, [elementType]);
   const effectiveDesignType = showDesignTypeOverride ? designType : elementDesignMode;
+  const visibleWorkflowSteps = ['Setup', 'Reference', 'Logging', 'Verification', 'Closeout'] as const;
 
   const phraseUsage = useMemo(() => {
     // Usage stats are computed from saved intervals (frequency + recency) to drive "learning" suggestions
@@ -846,14 +844,23 @@ export const SiteLoggingElement: React.FC = () => {
   }, [element?.id, elementDesignMode, showDesignTypeOverride]);
 
   useEffect(() => {
-    // Keep interpretation variance classification in sync with current reference range + actual ToR.
-    const expectedMin = toNumberOrNull(groundRefExpectedTorMin);
-    const expectedMax = toNumberOrNull(groundRefExpectedTorMax);
+    // Keep ToR variance classification in sync with the (optional) report/reference ToR and the current actual ToR.
+    // Site "reference" is treated as a knowledge base; we avoid hard-coded expected ranges here.
+    const refTor = toNumberOrNull(interpReferenceTorDepth);
     const actual = toNumberOrNull(interpActualTorDepth);
-    const next = computeTorVarianceClass({ expectedMin, expectedMax, actualTor: actual });
+
+    const next = (() => {
+      if (refTor == null || actual == null) return 'inconsistent_with_reference' as const;
+      const delta = actual - refTor;
+      if (Math.abs(delta) <= 0.5) return 'within_range' as const;
+      if (delta < -0.5) return 'shallower_than_expected' as const;
+      // Field-friendly thresholds (can be tuned later without schema changes).
+      return delta <= 1.0 ? ('slightly_deeper' as const) : ('significantly_deeper' as const);
+    })();
+
     setInterpVarianceClass(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groundRefExpectedTorMin, groundRefExpectedTorMax, interpActualTorDepth]);
+  }, [interpReferenceTorDepth, interpActualTorDepth]);
   const torCard = useMemo(
     () =>
       computeTorCard(
@@ -864,6 +871,10 @@ export const SiteLoggingElement: React.FC = () => {
         intervals
       ),
     [interpReferenceTorDepth, interpActualTorDepth, intervals]
+  );
+  const inferredTorDepth = useMemo(
+    () => computeTorCard({ reference_tor_depth_m: null, actual_tor_depth_m: null } as any, intervals).actualTorDepthM,
+    [intervals]
   );
 
   const seededGroundReference = useMemo(() => {
@@ -975,6 +986,35 @@ export const SiteLoggingElement: React.FC = () => {
     if (actions.length === 0) push('Continue drilling (review intervals and verification).');
     return actions;
   }, [verificationSummary, interpActualTorDepth]);
+
+  const pileFieldVerification = useMemo(() => {
+    const result: Record<string, any> = verificationSummary?.result && typeof verificationSummary.result === 'object' ? verificationSummary.result : {};
+    const actualRockEntry = toNumberOrNull(interpActualTorDepth) ?? inferredTorDepth;
+    const requiredSocket = toNumberOrNull(String(result?.required_socket_length_m ?? designInput?.required_socket_length_m ?? ''));
+    const actualFinalDepth = toNumberOrNull(String(result?.actual_total_depth_m ?? ''));
+    const actualSocket =
+      String(result?.socket_basis || designInput?.socket_basis || 'gross_socket') === 'net_competent_socket'
+        ? toNumberOrNull(String(result?.net_socket_length_m ?? ''))
+        : toNumberOrNull(String(result?.gross_socket_length_m ?? ''));
+    const minFinalDepth =
+      actualRockEntry != null && requiredSocket != null
+        ? actualRockEntry + requiredSocket
+        : null;
+
+    return {
+      actualRockEntry,
+      requiredSocket,
+      actualFinalDepth,
+      actualSocket,
+      minFinalDepth,
+      plungeRequired: toNumberOrNull(String(result?.required_plunge_length_m ?? designInput?.required_plunge_length_m ?? '')),
+      plungeActual: toNumberOrNull(String(result?.plunge_length_actual_m ?? '')),
+      overdrillAllowance: toNumberOrNull(String(result?.max_overdrill_m ?? designInput?.max_overdrill_m ?? '')),
+      overdrillActual: toNumberOrNull(String(result?.overdrill_length_m ?? '')),
+      cleanOutPass: result?.clean_out_pass,
+      groutReady: result?.grout_ready,
+    };
+  }, [verificationSummary, designInput, interpActualTorDepth, inferredTorDepth]);
 
   const pileReferenceDiagram = useMemo(() => {
     const list = sitePhotos.filter((p: any) => String(p.photo_type || '').trim() === PHOTO_TYPE_REFERENCE_DIAGRAM);
@@ -1131,6 +1171,19 @@ export const SiteLoggingElement: React.FC = () => {
     } catch {
       currentDesignInput = { ...designInput };
       setDesignInput(currentDesignInput);
+    }
+
+    // Initialize raw numeric inputs for pile essentials (do not overwrite during user typing).
+    try {
+      setPileBaseCasingRaw(currentDesignInput.casing_to_depth_m != null ? String(currentDesignInput.casing_to_depth_m) : '');
+      setPileMinPlungeRaw(currentDesignInput.required_plunge_length_m != null ? String(currentDesignInput.required_plunge_length_m) : '');
+      setPileMinSocketRaw(currentDesignInput.required_socket_length_m != null ? String(currentDesignInput.required_socket_length_m) : '');
+      setPileMinAnchHwRaw(currentDesignInput.min_anchorage_hw_m != null ? String(currentDesignInput.min_anchorage_hw_m) : '');
+      setPileMinAnchMwRaw(currentDesignInput.min_anchorage_mw_m != null ? String(currentDesignInput.min_anchorage_mw_m) : '');
+      setPileGroundRlRaw(el.ground_rl != null ? String(el.ground_rl) : '');
+      setPileHoleDiaRaw(el.hole_diameter_mm != null ? String(el.hole_diameter_mm) : '');
+    } catch {
+      // ignore
     }
     setReferenceRlType(((ds as any)?.reference_rl_type as any) || 'ground_rl');
 
@@ -1319,10 +1372,38 @@ export const SiteLoggingElement: React.FC = () => {
 
   const saveDesign = async () => {
     if (!element) return;
-    await siteDesignInputRepo.upsert(element.id, designType, JSON.stringify(designInput), {
+
+    // Commit raw numeric inputs so "0.1" style values persist correctly.
+    const committedDesignInput =
+      effectiveDesignType === 'MicroPile'
+        ? {
+            ...designInput,
+            casing_to_depth_m: parseNumberOrNull(pileBaseCasingRaw),
+            required_plunge_length_m: parseNumberOrNull(pileMinPlungeRaw),
+            required_socket_length_m: parseNumberOrNull(pileMinSocketRaw),
+            min_anchorage_hw_m: parseNumberOrNull(pileMinAnchHwRaw),
+            min_anchorage_mw_m: parseNumberOrNull(pileMinAnchMwRaw),
+          }
+        : designInput;
+
+    setDesignInput(committedDesignInput);
+
+    // Commit pile element numeric fields on Save (buffered typing for mobile).
+    if (effectiveDesignType === 'MicroPile') {
+      try {
+        await saveElementPatch({
+          ground_rl: parseNumberOrNull(pileGroundRlRaw),
+          hole_diameter_mm: parseNumberOrNull(pileHoleDiaRaw) as any,
+        } as any);
+      } catch {
+        // ignore; element patch errors are surfaced elsewhere
+      }
+    }
+
+    await siteDesignInputRepo.upsert(element.id, designType, JSON.stringify(committedDesignInput), {
       element_type: String(element.element_type || '').toLowerCase(),
       reference_rl_type: referenceRlType,
-      design_json: JSON.stringify(designInput),
+      design_json: JSON.stringify(committedDesignInput),
     });
     reload();
     alert('Design input saved.');
@@ -1738,18 +1819,7 @@ export const SiteLoggingElement: React.FC = () => {
     const refTor = toNumberOrNull(interpReferenceTorDepth);
     const refVel = toNumberOrNull(interpReferenceTorVelocity);
     const actualTor = toNumberOrNull(interpActualTorDepth);
-    const expectedMin = toNumberOrNull(groundRefExpectedTorMin);
-    const expectedMax = toNumberOrNull(groundRefExpectedTorMax);
-    const variance = (() => {
-      if (actualTor == null) return null;
-      if (expectedMin == null && expectedMax == null) return refTor != null ? actualTor - refTor : null;
-      const lo = expectedMin != null ? expectedMin : expectedMax;
-      const hi = expectedMax != null ? expectedMax : expectedMin;
-      if (lo == null || hi == null) return refTor != null ? actualTor - refTor : null;
-      if (actualTor >= Math.min(lo, hi) && actualTor <= Math.max(lo, hi)) return 0;
-      if (actualTor < Math.min(lo, hi)) return actualTor - Math.min(lo, hi);
-      return actualTor - Math.max(lo, hi);
-    })();
+    const variance = actualTor != null && refTor != null ? actualTor - refTor : null;
 
     const reasons = [
       ...interpVarianceReasons.map(String).map((s) => s.trim()).filter(Boolean),
@@ -1766,7 +1836,7 @@ export const SiteLoggingElement: React.FC = () => {
       tor_variance_class: interpVarianceClass,
       reasons,
       other: interpVarianceOther.trim() || null,
-      expected_range_m: expectedMin != null || expectedMax != null ? { min: expectedMin, max: expectedMax } : null,
+      reference_tor_m: refTor,
     });
     const weakBandsJson = JSON.stringify(weakBands);
     setInterpReasonsJson(reasonsJson);
@@ -2350,31 +2420,12 @@ export const SiteLoggingElement: React.FC = () => {
 
           {activeStep === 'Setup' && (
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <select
-                value={coerceElementTypeToFieldType(String(element.element_type || ''))}
-                onChange={(e) => saveElementPatch({ element_type: e.target.value })}
-                className="rounded-lg border px-3 py-2 text-sm"
-              >
-                <option value="anchor">Anchor</option>
-                <option value="soil_nail">Soil nail</option>
-                <option value="micro_pile">Pile</option>
-              </select>
               <input
                 value={element.element_code ?? ''}
                 onChange={(e) => saveElementPatch({ element_code: e.target.value })}
                 className="rounded-lg border px-3 py-2 text-sm"
                 placeholder="Element code"
               />
-              <select
-                value={coerceStatusToFieldStatus(String(element.status || ''))}
-                onChange={(e) => saveElementPatch({ status: e.target.value })}
-                className="rounded-lg border px-3 py-2 text-sm"
-              >
-                <option value="draft">Draft</option>
-                <option value="in_progress">In progress</option>
-                <option value="review">Review</option>
-                <option value="finalised">Finalised</option>
-              </select>
               <input
                 value={element.chainage ?? ''}
                 onChange={(e) => saveElementPatch({ chainage: toNumberOrNull(e.target.value) })}
@@ -2394,7 +2445,7 @@ export const SiteLoggingElement: React.FC = () => {
 
         <div className="rounded-xl border bg-white p-2">
           <div className="flex flex-wrap gap-2">
-            {(['Setup', 'Reference', 'Logging', 'Interpretation', 'Verification', 'Closeout'] as const).map((t) => (
+            {visibleWorkflowSteps.map((t) => (
               <button
                 key={t}
                 onClick={() => setActiveStep(t)}
@@ -2419,35 +2470,233 @@ export const SiteLoggingElement: React.FC = () => {
             </div>
             <div className="mt-2 grid grid-cols-1 gap-2">
               <div className="flex items-center justify-between gap-2 rounded-lg border bg-zinc-50 p-2">
-                <div className="text-sm text-zinc-700">
-                  Design mode:{' '}
-                  <span className="font-semibold text-zinc-900">
-                    {effectiveDesignType === 'MicroPile' ? 'Pile' : effectiveDesignType === 'SoilNail' ? 'Soil nail' : effectiveDesignType}
-                  </span>
-                </div>
+                <div className="text-[11px] font-bold uppercase text-zinc-700">Field essentials</div>
                 <button
-                  onClick={() => setShowDesignTypeOverride((v) => !v)}
-                  className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-100"
-                  title="Allow overriding design mode for edge cases"
+                  onClick={() => setShowSetupAdvanced((v) => !v)}
+                  className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-100"
+                  title="Show less-used settings"
                 >
-                  {showDesignTypeOverride ? 'Lock to type' : 'Override'}
+                  {showSetupAdvanced ? 'Hide advanced' : 'Advanced'}
                 </button>
               </div>
-              {showDesignTypeOverride && (
-                <select value={designType} onChange={(e) => setDesignType(e.target.value)} className="rounded-lg border px-3 py-2 text-sm">
-                  <option value="Default">Default</option>
-                  <option value="Anchor">Anchor</option>
-                  <option value="SoilNail">Soil nail</option>
-                  <option value="MicroPile">Pile</option>
-                </select>
-              )}
-              <select value={referenceRlType} onChange={(e) => setReferenceRlType(e.target.value as any)} className="rounded-lg border px-3 py-2 text-sm">
-                <option value="ground_rl">Reference RL: ground_rl</option>
-                <option value="nail_rl">Reference RL: nail_rl</option>
-                <option value="platform_rl">Reference RL: platform_rl</option>
-                <option value="toe_rl">Reference RL: toe_rl</option>
-              </select>
 
+              {(effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail') && (
+                <div className="rounded-lg border bg-white p-3">
+                  <div className="text-[11px] font-bold uppercase text-zinc-600">
+                    {effectiveDesignType === 'SoilNail' ? 'Soil nail essentials' : 'Anchor essentials'}
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Anchorage length (m)"
+                      inputMode="decimal"
+                      value={designInput.design_anchorage_length_m ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, design_anchorage_length_m: toNumberOrNull(e.target.value) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Socket / bond length (m)"
+                      inputMode="decimal"
+                      value={designInput.required_socket_length_m ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, required_socket_length_m: toNumberOrNull(e.target.value) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Working load (kN)"
+                      inputMode="decimal"
+                      value={designInput.working_load_kN ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, working_load_kN: toNumberOrNull(e.target.value) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Max overdrill (m)"
+                      inputMode="decimal"
+                      value={designInput.max_overdrill_m ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {effectiveDesignType === 'MicroPile' && (
+                <div className="rounded-lg border bg-white p-3">
+                  <div className="text-[11px] font-bold uppercase text-zinc-600">Pile essentials</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Collar / ground RL (m)"
+                      inputMode="decimal"
+                      value={pileGroundRlRaw}
+                      onChange={(e) => setPileGroundRlRaw(e.target.value)}
+                      onBlur={() => void saveElementPatch({ ground_rl: parseNumberOrNull(pileGroundRlRaw) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Hole diameter (mm)"
+                      inputMode="numeric"
+                      value={pileHoleDiaRaw}
+                      onChange={(e) => setPileHoleDiaRaw(e.target.value)}
+                      onBlur={() => void saveElementPatch({ hole_diameter_mm: parseNumberOrNull(pileHoleDiaRaw) as any })}
+                    />
+                    <input
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Steel casing size (e.g. 273 OD, 250 NB)"
+                      value={designInput.steel_casing_size ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, steel_casing_size: e.target.value })}
+                    />
+                    <input
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Casing type (temporary / permanent / none)"
+                      value={designInput.casing_type ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, casing_type: e.target.value })}
+                    />
+                    <input
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Base of casing depth (m)"
+                      inputMode="decimal"
+                      value={pileBaseCasingRaw}
+                      onChange={(e) => setPileBaseCasingRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, casing_to_depth_m: parseNumberOrNull(pileBaseCasingRaw) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Min casing plunge into rock (m)"
+                      inputMode="decimal"
+                      value={pileMinPlungeRaw}
+                      onChange={(e) => setPileMinPlungeRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, required_plunge_length_m: parseNumberOrNull(pileMinPlungeRaw) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Min socket length (m)"
+                      inputMode="decimal"
+                      value={pileMinSocketRaw}
+                      onChange={(e) => setPileMinSocketRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, required_socket_length_m: parseNumberOrNull(pileMinSocketRaw) })}
+                    />
+                    <input
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Anchor bar size (optional)"
+                      value={designInput.anchor_bar_size ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, anchor_bar_size: e.target.value })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Max overdrill (m)"
+                      inputMode="decimal"
+                      value={designInput.max_overdrill_m ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })}
+                    />
+                    <div />
+                    <textarea
+                      className="col-span-2 min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
+                      placeholder="Approval notes (optional)"
+                      value={designInput.approval_notes ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, approval_notes: e.target.value })}
+                    />
+                  </div>
+                </div>
+              )}
+              {showSetupAdvanced && effectiveDesignType === 'MicroPile' && (
+                <div className="rounded-lg border bg-zinc-50 p-3">
+                  <div className="text-[11px] font-bold uppercase text-zinc-600">Pile advanced</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Foundation / post ID (optional)"
+                      value={designInput.foundation_id ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, foundation_id: e.target.value })}
+                    />
+                    <select
+                      value={designInput.socket_basis ?? 'gross_socket'}
+                      onChange={(e) => setDesignInput({ ...designInput, socket_basis: e.target.value })}
+                      className="rounded-lg border px-3 py-2 text-sm"
+                    >
+                      <option value="gross_socket">Socket basis: gross socket</option>
+                      <option value="net_competent_socket">Socket basis: net competent socket</option>
+                    </select>
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Min rock anchorage (HW) (m)"
+                      inputMode="decimal"
+                      value={pileMinAnchHwRaw}
+                      onChange={(e) => setPileMinAnchHwRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, min_anchorage_hw_m: parseNumberOrNull(pileMinAnchHwRaw) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Min rock anchorage (MW) (m)"
+                      inputMode="decimal"
+                      value={pileMinAnchMwRaw}
+                      onChange={(e) => setPileMinAnchMwRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, min_anchorage_mw_m: parseNumberOrNull(pileMinAnchMwRaw) })}
+                    />
+                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
+                      <input type="checkbox" checked={Boolean(designInput.weak_band_deduction_required)} onChange={(e) => setDesignInput({ ...designInput, weak_band_deduction_required: e.target.checked })} />
+                      Weak band deduction required
+                    </label>
+                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
+                      <input type="checkbox" checked={Boolean(designInput.clean_out_required)} onChange={(e) => setDesignInput({ ...designInput, clean_out_required: e.target.checked })} />
+                      Clean-out required
+                    </label>
+                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
+                      <input type="checkbox" checked={Boolean(designInput.grout_approval_required)} onChange={(e) => setDesignInput({ ...designInput, grout_approval_required: e.target.checked })} />
+                      Grout approval required
+                    </label>
+                  </div>
+                </div>
+              )}
+              {showSetupAdvanced && (
+                <div className="rounded-lg border bg-zinc-50 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-bold uppercase text-zinc-600">Project / admin controls</div>
+                    <button
+                      onClick={() => setShowDesignTypeOverride((v) => !v)}
+                      className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-100"
+                      title="Allow overriding design mode for edge cases"
+                    >
+                      {showDesignTypeOverride ? 'Lock type' : 'Type override'}
+                    </button>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <select
+                      value={coerceElementTypeToFieldType(String(element.element_type || ''))}
+                      onChange={(e) => saveElementPatch({ element_type: e.target.value })}
+                      className="rounded-lg border px-3 py-2 text-sm"
+                    >
+                      <option value="anchor">Anchor</option>
+                      <option value="soil_nail">Soil nail</option>
+                      <option value="micro_pile">Pile</option>
+                    </select>
+                    <select
+                      value={coerceStatusToFieldStatus(String(element.status || ''))}
+                      onChange={(e) => saveElementPatch({ status: e.target.value })}
+                      className="rounded-lg border px-3 py-2 text-sm"
+                    >
+                      <option value="draft">Draft</option>
+                      <option value="in_progress">In progress</option>
+                      <option value="review">Review</option>
+                      <option value="finalised">Finalised</option>
+                    </select>
+                    {showDesignTypeOverride && (
+                      <select value={designType} onChange={(e) => setDesignType(e.target.value)} className="rounded-lg border px-3 py-2 text-sm">
+                        <option value="Default">Default</option>
+                        <option value="Anchor">Anchor</option>
+                        <option value="SoilNail">Soil nail</option>
+                        <option value="MicroPile">Pile</option>
+                      </select>
+                    )}
+                    <select value={referenceRlType} onChange={(e) => setReferenceRlType(e.target.value as any)} className="rounded-lg border px-3 py-2 text-sm">
+                      <option value="ground_rl">Reference RL: ground RL</option>
+                      <option value="nail_rl">Reference RL: nail RL</option>
+                      <option value="platform_rl">Reference RL: platform RL</option>
+                      <option value="toe_rl">Reference RL: toe RL</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {showSetupAdvanced && (
               <div className="rounded-lg border bg-zinc-50 p-3">
                 <div className="text-[11px] font-bold uppercase text-zinc-600">Workflow options</div>
                 <div className="mt-2 grid grid-cols-1 gap-2">
@@ -2491,25 +2740,18 @@ export const SiteLoggingElement: React.FC = () => {
                   )}
                 </div>
               </div>
+              )}
 
-              {(effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail') && (
+              {showSetupAdvanced && (effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail') && (
                 <div className="rounded-lg border bg-zinc-50 p-3">
                   <div className="text-[11px] font-bold uppercase text-zinc-600">
                     {effectiveDesignType === 'SoilNail' ? 'Soil nail design' : 'Anchor design'}
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Design anchorage length (m)" inputMode="decimal"
-                      value={designInput.design_anchorage_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, design_anchorage_length_m: toNumberOrNull(e.target.value) })} />
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Required socket / bond length (m)" inputMode="decimal"
-                      value={designInput.required_socket_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, required_socket_length_m: toNumberOrNull(e.target.value) })} />
                     <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Bonded length (m)" inputMode="decimal"
                       value={designInput.design_bonded_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, design_bonded_length_m: toNumberOrNull(e.target.value) })} />
                     <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Debonded length (m)" inputMode="decimal"
                       value={designInput.design_debonded_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, design_debonded_length_m: toNumberOrNull(e.target.value) })} />
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Max overdrill (m)" inputMode="decimal"
-                      value={designInput.max_overdrill_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })} />
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Working load (kN)" inputMode="decimal"
-                      value={designInput.working_load_kN ?? ''} onChange={(e) => setDesignInput({ ...designInput, working_load_kN: toNumberOrNull(e.target.value) })} />
                     <textarea
                       className="col-span-2 min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
                       placeholder="Approval notes (optional)"
@@ -2520,47 +2762,7 @@ export const SiteLoggingElement: React.FC = () => {
                 </div>
               )}
 
-              {effectiveDesignType === 'MicroPile' && (
-                <div className="rounded-lg border bg-zinc-50 p-3">
-                  <div className="text-[11px] font-bold uppercase text-zinc-600">Pile design</div>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <input className="col-span-2 rounded-lg border px-3 py-2 text-sm" placeholder="Casing type (e.g. temporary / permanent / none)"
-                      value={designInput.casing_type ?? ''} onChange={(e) => setDesignInput({ ...designInput, casing_type: e.target.value })} />
-                    <input className="col-span-2 rounded-lg border px-3 py-2 text-sm" placeholder="Base of casing depth (m, optional)" inputMode="decimal"
-                      value={designInput.casing_to_depth_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, casing_to_depth_m: toNumberOrNull(e.target.value) })} />
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Required plunge length (m)" inputMode="decimal"
-                      value={designInput.required_plunge_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, required_plunge_length_m: toNumberOrNull(e.target.value) })} />
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Required socket length (m)" inputMode="decimal"
-                      value={designInput.required_socket_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, required_socket_length_m: toNumberOrNull(e.target.value) })} />
-                    <select value={designInput.socket_basis ?? 'gross_socket'} onChange={(e) => setDesignInput({ ...designInput, socket_basis: e.target.value })} className="rounded-lg border px-3 py-2 text-sm">
-                      <option value="gross_socket">Socket basis: gross_socket</option>
-                      <option value="net_competent_socket">Socket basis: net_competent_socket</option>
-                    </select>
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Max overdrill (m)" inputMode="decimal"
-                      value={designInput.max_overdrill_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })} />
-                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                      <input type="checkbox" checked={Boolean(designInput.weak_band_deduction_required)} onChange={(e) => setDesignInput({ ...designInput, weak_band_deduction_required: e.target.checked })} />
-                      Weak band deduction required
-                    </label>
-                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                      <input type="checkbox" checked={Boolean(designInput.clean_out_required)} onChange={(e) => setDesignInput({ ...designInput, clean_out_required: e.target.checked })} />
-                      Clean-out required
-                    </label>
-                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                      <input type="checkbox" checked={Boolean(designInput.grout_approval_required)} onChange={(e) => setDesignInput({ ...designInput, grout_approval_required: e.target.checked })} />
-                      Grout approval required
-                    </label>
-                    <textarea
-                      className="col-span-2 min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
-                      placeholder="Approval notes (optional)"
-                      value={designInput.approval_notes ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, approval_notes: e.target.value })}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {Boolean(designInput.suitability_test_required) && showSuitabilitySetup && (
+              {showSetupAdvanced && Boolean(designInput.suitability_test_required) && showSuitabilitySetup && (
                 <div className="rounded-lg border bg-zinc-50 p-3">
                   <div className="text-[11px] font-bold uppercase text-zinc-600">Suitability (optional)</div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
@@ -3463,11 +3665,7 @@ export const SiteLoggingElement: React.FC = () => {
                 <div className="rounded-lg border bg-white p-2">
                   <div className="text-[11px] uppercase text-zinc-500">Reference ToR</div>
                   <div className="font-semibold text-zinc-800">
-                    {groundRefExpectedTorMin || groundRefExpectedTorMax
-                      ? `${groundRefExpectedTorMin || '?'}–${groundRefExpectedTorMax || '?'} m`
-                      : torCard.referenceTorDepthM != null
-                        ? `${torCard.referenceTorDepthM.toFixed(2)} m`
-                        : '-'}
+                    {torCard.referenceTorDepthM != null ? `${torCard.referenceTorDepthM.toFixed(2)} m` : '-'}
                   </div>
                 </div>
                 <div className="rounded-lg border bg-white p-2">
@@ -3486,12 +3684,12 @@ export const SiteLoggingElement: React.FC = () => {
                     value={interpVarianceClass}
                     onChange={(e) => setInterpVarianceClass(e.target.value as any)}
                     className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                    title="Structured classification of expected vs actual ToR"
+                    title="Structured classification of reference vs actual ToR"
                   >
-                    <option value="within_range">Within expected range</option>
-                    <option value="slightly_deeper">Slightly deeper than expected</option>
-                    <option value="significantly_deeper">Significantly deeper than expected</option>
-                    <option value="shallower_than_expected">Shallower than expected</option>
+                    <option value="within_range">Matches reference (±0.5 m)</option>
+                    <option value="slightly_deeper">Deeper than reference (slight)</option>
+                    <option value="significantly_deeper">Deeper than reference (significant)</option>
+                    <option value="shallower_than_expected">Shallower than reference</option>
                     <option value="inconsistent_with_reference">Inconsistent / reference unclear</option>
                   </select>
                 </div>
@@ -3512,7 +3710,7 @@ export const SiteLoggingElement: React.FC = () => {
               <div className="mt-3 rounded-lg border bg-white p-2 text-[12px] text-zinc-700">
                 <div className="text-[11px] font-bold uppercase text-zinc-500">Reliability hints</div>
                 <div className="mt-1 grid grid-cols-1 gap-1">
-                  {interpVarianceClass === 'within_range' && <div>Reference and actual ToR align (within expected range).</div>}
+                  {interpVarianceClass === 'within_range' && <div>Reference and actual ToR broadly align.</div>}
                   {interpVarianceClass !== 'within_range' && <div>Actual ToR differs from reference. Consider variance reasons and confidence.</div>}
                   {interpConfidence === 'low' && <div>Low confidence: engineer review is recommended before acting on verification.</div>}
                   {interpWeakBands.length > 0 && <div>Weak bands recorded: may reduce competent socket / continuity confidence.</div>}
@@ -3679,9 +3877,9 @@ export const SiteLoggingElement: React.FC = () => {
         <div className="rounded-xl border bg-white p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-col">
-              <div className="text-sm font-bold text-zinc-800">Site Reference</div>
+              <div className="text-sm font-bold text-zinc-800">Site knowledge base</div>
               <div className="text-[11px] text-zinc-600">
-                Site guidance from reports (reference-only). Field observations remain the source of truth.
+                A project-maintained field library (terms, phrases, notes, borehole highlights). Reference-only; field observations remain the source of truth.
               </div>
             </div>
             <div className="flex gap-2">
@@ -3739,28 +3937,11 @@ export const SiteLoggingElement: React.FC = () => {
                   if (!seed) return <div className="mt-2 text-sm text-zinc-500">No seeded default exists for this site.</div>;
                   const units = parseJsonArray(String(seed.geotechnical_units_json ?? '[]'));
                   const risks = parseJsonArray(String(seed.site_risk_flags_json ?? '[]'));
-                  const min = seed.expected_tor_min_m != null ? String(seed.expected_tor_min_m) : '';
-                  const max = seed.expected_tor_max_m != null ? String(seed.expected_tor_max_m) : '';
-                  const vel = seed.reference_tor_velocity_ms != null ? String(seed.reference_tor_velocity_ms) : '';
                   const notes = String(seed.reference_notes ?? '').trim();
                   return (
                     <div className="mt-2 grid grid-cols-1 gap-3">
-                      <div className="grid grid-cols-3 gap-2 text-sm">
-                        <div className="rounded-lg border bg-zinc-50 p-2">
-                          <div className="text-[11px] uppercase text-zinc-500">ToR range</div>
-                          <div className="font-semibold text-zinc-800">{min || max ? `${min || '?'}–${max || '?'} m` : '-'}</div>
-                        </div>
-                        <div className="rounded-lg border bg-zinc-50 p-2">
-                          <div className="text-[11px] uppercase text-zinc-500">Velocity ref</div>
-                          <div className="font-semibold text-zinc-800">{vel ? `${vel} m/s` : '-'}</div>
-                        </div>
-                        <div className="rounded-lg border bg-zinc-50 p-2">
-                          <div className="text-[11px] uppercase text-zinc-500">Risks</div>
-                          <div className="font-semibold text-zinc-800">{risks.length || 0}</div>
-                        </div>
-                      </div>
                       <div>
-                        <div className="text-[11px] font-bold uppercase text-zinc-500">Expected geology</div>
+                        <div className="text-[11px] font-bold uppercase text-zinc-500">Geology terms (seeded)</div>
                         <div className="mt-2 flex flex-wrap gap-2">
                           {units.length === 0 && <div className="text-sm text-zinc-500">No units in seeded default.</div>}
                           {units.slice(0, 10).map((u: any) => (
@@ -3772,7 +3953,7 @@ export const SiteLoggingElement: React.FC = () => {
                       </div>
                       {!!risks.length && (
                         <div>
-                          <div className="text-[11px] font-bold uppercase text-zinc-500">Risk flags</div>
+                          <div className="text-[11px] font-bold uppercase text-zinc-500">Site tags / risks (seeded)</div>
                           <div className="mt-2 flex flex-wrap gap-2">
                             {risks.slice(0, 12).map((r: any) => (
                               <span key={String(r)} className="rounded-full bg-amber-50 px-3 py-1 text-[12px] font-semibold text-amber-900">
@@ -3802,55 +3983,71 @@ export const SiteLoggingElement: React.FC = () => {
                 </div>
               </div>
 
-              <div className="rounded-lg border bg-zinc-50 p-3">
-                <div className="text-[11px] font-bold uppercase text-zinc-600">Expected ToR</div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
-                  <div className="rounded-lg border bg-white p-2">
-                    <div className="text-[11px] uppercase text-zinc-500">ToR range</div>
-                    <div className="font-semibold text-zinc-800">
-                      {groundRefExpectedTorMin || groundRefExpectedTorMax ? `${groundRefExpectedTorMin || '?'}–${groundRefExpectedTorMax || '?'} m` : '-'}
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-[11px] font-bold uppercase text-zinc-600">1) Site ground summary</div>
+                <div className="mt-2 grid grid-cols-1 gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Expected materials</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {parseJsonArray(groundRefUnitsJson).length === 0 && <div className="text-sm text-zinc-500">No units recorded for this site.</div>}
+                      {parseJsonArray(groundRefUnitsJson).map((u) => (
+                        <span key={String(u)} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">
+                          {String(u)}
+                        </span>
+                      ))}
                     </div>
                   </div>
-                  <div className="rounded-lg border bg-white p-2">
-                    <div className="text-[11px] uppercase text-zinc-500">Velocity ref</div>
-                    <div className="font-semibold text-zinc-800">{groundRefRefVelocity ? `${groundRefRefVelocity} m/s` : '-'}</div>
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Expected rock type</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.rock_type.length === 0 && <div className="text-sm text-zinc-500">No rock type phrases recorded.</div>}
+                      {builderOptions.rock_type.slice(0, 8).map((t) => (
+                        <span key={t} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">{t}</span>
+                      ))}
+                    </div>
                   </div>
-                  <div className="rounded-lg border bg-white p-2">
-                    <div className="text-[11px] uppercase text-zinc-500">Risks</div>
-                    <div className="font-semibold text-zinc-800">{parseJsonArray(groundRefRiskFlagsJson).length || 0}</div>
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Expected weathering profile</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.weathering.length === 0 && <div className="text-sm text-zinc-500">No weathering phrases recorded.</div>}
+                      {builderOptions.weathering.slice(0, 8).map((t) => (
+                        <span key={t} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">{t}</span>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-[11px] font-bold uppercase text-zinc-600">Expected geology</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {parseJsonArray(groundRefUnitsJson).length === 0 && <div className="text-sm text-zinc-500">No units recorded for this site.</div>}
-                  {parseJsonArray(groundRefUnitsJson).map((u) => (
-                    <span key={String(u)} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">
-                      {String(u)}
-                    </span>
-                  ))}
-                </div>
-                <div className="mt-3 text-[11px] font-bold uppercase text-zinc-600">Site risks</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {parseJsonArray(groundRefRiskFlagsJson).length === 0 && <div className="text-sm text-zinc-500">No risks flagged.</div>}
-                  {parseJsonArray(groundRefRiskFlagsJson).map((r) => (
-                    <span key={String(r)} className="rounded-full bg-amber-50 px-3 py-1 text-[12px] font-semibold text-amber-900">
-                      {String(r)}
-                    </span>
-                  ))}
-                </div>
-                {groundRefNotes?.trim() && (
-                  <div className="mt-3 rounded-lg border bg-zinc-50 p-2 text-[12px] text-zinc-700 whitespace-pre-wrap">
-                    {groundRefNotes}
+                  {(groundRefExpectedTorMin || groundRefExpectedTorMax) && (
+                    <div>
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">Expected ToR / rock entry range</div>
+                      <div className="mt-2 rounded-lg border bg-zinc-50 p-2 text-[12px] font-semibold text-zinc-800">
+                        {groundRefExpectedTorMin || '?'}–{groundRefExpectedTorMax || '?'} m
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Key site risks</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {parseJsonArray(groundRefRiskFlagsJson).length === 0 && <div className="text-sm text-zinc-500">No risks flagged.</div>}
+                      {parseJsonArray(groundRefRiskFlagsJson).map((r) => (
+                        <span key={String(r)} className="rounded-full bg-amber-50 px-3 py-1 text-[12px] font-semibold text-amber-900">
+                          {String(r)}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                )}
+                  {groundRefNotes?.trim() && (
+                    <div>
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">Short field note</div>
+                      <div className="mt-2 rounded-lg border bg-zinc-50 p-2 text-[12px] text-zinc-700 whitespace-pre-wrap">
+                        {groundRefNotes}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="rounded-lg border bg-white p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-[11px] font-bold uppercase text-zinc-600">Common phrases for this site</div>
+                  <div className="text-[11px] font-bold uppercase text-zinc-600">2) Logging description library</div>
                   <button
                     onClick={() => setActiveStep('Logging')}
                     className="rounded-lg bg-zinc-100 px-3 py-1.5 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
@@ -3893,7 +4090,19 @@ export const SiteLoggingElement: React.FC = () => {
                     </div>
                   </div>
                   <div>
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">Conditions</div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Colour and weathering</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.colour.slice(0, 8).map((t) => (
+                        <button key={`colour-${t}`} onClick={() => applyReferencePhraseToLogging('colour', t)} className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">{t}</button>
+                      ))}
+                      {builderOptions.weathering.slice(0, 8).map((t) => (
+                        <button key={`weathering-${t}`} onClick={() => applyReferencePhraseToLogging('weathering', t)} className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50">{t}</button>
+                      ))}
+                      {builderOptions.colour.length === 0 && builderOptions.weathering.length === 0 && <div className="text-sm text-zinc-500">No colour or weathering phrases yet.</div>}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Recovery / water / drilling response</div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {builderOptions.water.slice(0, 6).map((t) => (
                         <button
@@ -3931,7 +4140,7 @@ export const SiteLoggingElement: React.FC = () => {
                     </div>
                   </div>
                   <div>
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">Modifiers</div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Modifier phrases</div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {builderOptions.modifier.slice(0, 10).map((t) => (
                         <button
@@ -3966,66 +4175,100 @@ export const SiteLoggingElement: React.FC = () => {
               </div>
 
               <div className="rounded-lg border bg-white p-3">
-                <div className="text-[11px] font-bold uppercase text-zinc-600">Borehole calibration highlights</div>
-                <div className="mt-2 overflow-x-auto">
-                  <table className="min-w-[520px] w-full text-sm">
-                    <thead className="bg-white">
-                      <tr className="text-left text-[11px] uppercase text-zinc-500">
-                        <th className="px-2 py-1">BH</th>
-                        <th className="px-2 py-1">ToR</th>
-                        <th className="px-2 py-1">Velocity</th>
-                        <th className="px-2 py-1">Diff</th>
-                        <th className="px-2 py-1">Conf</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {boreholeCalibrations.length === 0 && (
-                        <tr><td className="px-2 py-2 text-zinc-500" colSpan={5}>No calibration rows.</td></tr>
-                      )}
-                      {boreholeCalibrations.slice(0, 8).map((row) => (
-                        <tr key={row.id} className="border-t">
-                          <td className="px-2 py-1 font-semibold text-zinc-800">{row.borehole_id}</td>
-                          <td className="px-2 py-1 text-zinc-700">{row.borehole_tor_depth_m_bgl ?? '-'}</td>
-                          <td className="px-2 py-1 text-zinc-700">{row.srt_velocity_at_tor_ms ?? '-'}</td>
-                          <td className="px-2 py-1 text-zinc-700">{row.difference_geophysics_minus_borehole_m ?? '-'}</td>
-                          <td className="px-2 py-1 text-zinc-700">{row.confidence ?? '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-white p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-[11px] font-bold uppercase text-zinc-600">Quick phrases</div>
+                  <div className="text-[11px] font-bold uppercase text-zinc-600">3) Report / investigation notes</div>
                   <button
-                    onClick={() => navigate('/site-logging/library')}
+                    onClick={() => setShowReferenceNotes((v) => !v)}
                     className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
                   >
-                    Open library
+                    {showReferenceNotes ? 'Hide notes' : 'Show notes'}
                   </button>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {phrases.slice(0, 18).map((phrase) => (
-                    <span key={phrase.id} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">
-                      {phrase.text}
-                    </span>
-                  ))}
-                  {phrases.length === 0 && <div className="text-sm text-zinc-500">No phrases found.</div>}
-                </div>
+                {!showReferenceNotes ? (
+                  <div className="mt-2 text-sm text-zinc-500">Collapsed by default. Open only when you need borehole or geophysics context.</div>
+                ) : (
+                  <div className="mt-2 grid grid-cols-1 gap-3">
+                    <div className="rounded-lg border bg-zinc-50 p-2 text-[12px] text-zinc-700">
+                      Report and investigation notes are reference only. Do not let them override field observations.
+                    </div>
+                    <div className="rounded-lg border bg-white p-3">
+                      <div className="text-[11px] font-bold uppercase text-zinc-600">Borehole calibration highlights</div>
+                      <div className="mt-2 overflow-x-auto">
+                        <table className="min-w-[520px] w-full text-sm">
+                          <thead className="bg-white">
+                            <tr className="text-left text-[11px] uppercase text-zinc-500">
+                              <th className="px-2 py-1">BH</th>
+                              <th className="px-2 py-1">ToR</th>
+                              <th className="px-2 py-1">Velocity</th>
+                              <th className="px-2 py-1">Diff</th>
+                              <th className="px-2 py-1">Conf</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {boreholeCalibrations.length === 0 && (
+                              <tr><td className="px-2 py-2 text-zinc-500" colSpan={5}>No calibration rows.</td></tr>
+                            )}
+                            {boreholeCalibrations.slice(0, 8).map((row) => (
+                              <tr key={row.id} className="border-t">
+                                <td className="px-2 py-1 font-semibold text-zinc-800">{row.borehole_id}</td>
+                                <td className="px-2 py-1 text-zinc-700">{row.borehole_tor_depth_m_bgl ?? '-'}</td>
+                                <td className="px-2 py-1 text-zinc-700">{row.srt_velocity_at_tor_ms ?? '-'}</td>
+                                <td className="px-2 py-1 text-zinc-700">{row.difference_geophysics_minus_borehole_m ?? '-'}</td>
+                                <td className="px-2 py-1 text-zinc-700">{row.confidence ?? '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border bg-white p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-bold uppercase text-zinc-600">Reference phrases snapshot</div>
+                        <button
+                          onClick={() => navigate('/site-logging/library')}
+                          className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                        >
+                          Open library
+                        </button>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {phrases.slice(0, 18).map((phrase) => (
+                          <span key={phrase.id} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">
+                            {phrase.text}
+                          </span>
+                        ))}
+                        {phrases.length === 0 && <div className="text-sm text-zinc-500">No phrases found.</div>}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
           {referenceAdminMode && (<>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Expected ToR min (m)" inputMode="decimal"
-              value={groundRefExpectedTorMin} onChange={(e) => setGroundRefExpectedTorMin(e.target.value)} />
-            <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Expected ToR max (m)" inputMode="decimal"
-              value={groundRefExpectedTorMax} onChange={(e) => setGroundRefExpectedTorMax(e.target.value)} />
-            <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Reference velocity (m/s)" inputMode="decimal"
-              value={groundRefRefVelocity} onChange={(e) => setGroundRefRefVelocity(e.target.value)} />
+            <input
+              className="rounded-lg border px-3 py-2 text-sm"
+              placeholder="Expected ToR / rock entry min (m, optional)"
+              inputMode="decimal"
+              value={groundRefExpectedTorMin}
+              onChange={(e) => setGroundRefExpectedTorMin(e.target.value)}
+            />
+            <input
+              className="rounded-lg border px-3 py-2 text-sm"
+              placeholder="Expected ToR / rock entry max (m, optional)"
+              inputMode="decimal"
+              value={groundRefExpectedTorMax}
+              onChange={(e) => setGroundRefExpectedTorMax(e.target.value)}
+            />
+            <input
+              className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+              placeholder="Reference velocity (m/s, optional)"
+              inputMode="decimal"
+              value={groundRefRefVelocity}
+              onChange={(e) => setGroundRefRefVelocity(e.target.value)}
+            />
             <div className="col-span-2 rounded-lg border bg-zinc-50 p-2">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Geotechnical units</div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-[12px] text-zinc-700">
@@ -4392,19 +4635,57 @@ export const SiteLoggingElement: React.FC = () => {
           <div className="rounded-xl border bg-white p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-bold text-zinc-800">Verification</div>
-              <button
-                onClick={runVerification}
-                disabled={!['Anchor', 'SoilNail', 'MicroPile'].includes(elementDesignMode)}
-                className="rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold uppercase text-white hover:bg-emerald-700 disabled:opacity-50"
-              >
-                Run verification
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowVerificationAdvanced((v) => !v)}
+                  className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                >
+                  {showVerificationAdvanced ? 'Hide advanced' : 'Advanced'}
+                </button>
+                <button
+                  onClick={runVerification}
+                  disabled={!['Anchor', 'SoilNail', 'MicroPile'].includes(elementDesignMode)}
+                  className="rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold uppercase text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  Run verification
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 text-[11px] text-zinc-600">
+              Field view keeps this as a simple required-versus-actual depth check. Rock entry comes from logging by default, with an optional manual override below.
             </div>
             {!['Anchor', 'SoilNail', 'MicroPile'].includes(elementDesignMode) && (
               <div className="mt-2 rounded-lg border bg-zinc-50 p-3 text-sm text-zinc-700">
                 Verification is not defined for element type: <span className="font-semibold">{formatElementTypeShortLabel(String(element.element_type || ''))}</span>.
               </div>
             )}
+
+            <div className="mt-3 rounded-lg border bg-white p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-bold uppercase text-zinc-500">Rock entry depth</div>
+                <div className="text-[12px] text-zinc-600">
+                  Source: <span className="font-semibold">{toNumberOrNull(interpActualTorDepth) != null ? 'Manual verification input' : 'Inferred from logging'}</span>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+                <input
+                  value={interpActualTorDepth}
+                  onChange={(e) => setInterpActualTorDepth(e.target.value)}
+                  className="rounded-lg border px-3 py-2 text-sm"
+                  placeholder="Actual rock entry depth (m, optional manual)"
+                  inputMode="decimal"
+                />
+                <button
+                  onClick={() => setInterpActualTorDepth(inferredTorDepth != null ? inferredTorDepth.toFixed(2) : '')}
+                  className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                >
+                  Use inferred from logging
+                </button>
+                <div className="rounded-lg border bg-zinc-50 px-3 py-2 text-sm text-zinc-700">
+                  Inferred from logging: <span className="font-semibold">{inferredTorDepth != null ? `${inferredTorDepth.toFixed(2)} m` : '-'}</span>
+                </div>
+              </div>
+            </div>
 
             <div className="mt-3 rounded-lg border bg-zinc-50 p-3">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Status</div>
@@ -4417,22 +4698,101 @@ export const SiteLoggingElement: React.FC = () => {
                 {verificationSummary?.status || 'not run'}
               </div>
               <div className="mt-2 text-[12px] text-zinc-700">
-                Actual ToR source:{' '}
+                Rock entry source:{' '}
                 <span className="font-semibold">
-                  {toNumberOrNull(interpActualTorDepth) != null ? 'Manual (Interpretation)' : 'Inferred from intervals'}
+                  {toNumberOrNull(interpActualTorDepth) != null ? 'Manual verification input' : 'Inferred from logging intervals'}
                 </span>
               </div>
-              {Array.isArray((verificationSummary as any)?.review_required_triggers) && (verificationSummary as any).review_required_triggers.length > 0 && (
-                <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50 p-2 text-[12px] text-violet-900">
-                  <div className="text-[11px] font-bold uppercase text-violet-900">Review required triggers</div>
-                  <div className="mt-1 grid grid-cols-1 gap-1">
-                    {(verificationSummary as any).review_required_triggers.slice(0, 6).map((t: any) => (
-                      <div key={String(t)}>{String(t)}</div>
-                    ))}
+            </div>
+
+            {verificationSummary?.kind === 'micro_pile' && (
+              <div className="mt-3 rounded-lg border bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-bold uppercase text-zinc-500">Field depth check</div>
+                  <div className="text-[11px] text-zinc-500">Required vs actual</div>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">1. Where did rock start?</div>
+                    <div className="mt-1 text-sm font-semibold text-zinc-900">
+                      {pileFieldVerification.actualRockEntry != null ? `${pileFieldVerification.actualRockEntry.toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-600">
+                      {toNumberOrNull(interpActualTorDepth) != null ? 'Manual verification input' : 'Inferred from logging'}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">2. Required rock embedment</div>
+                    <div className="mt-1 text-sm font-semibold text-zinc-900">
+                      {pileFieldVerification.requiredSocket != null ? `${pileFieldVerification.requiredSocket.toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-600">From Setup minimum socket / rock embedment.</div>
+                  </div>
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">3. Minimum final drilled depth</div>
+                    <div className="mt-1 text-sm font-semibold text-zinc-900">
+                      {pileFieldVerification.minFinalDepth != null ? `${pileFieldVerification.minFinalDepth.toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-600">Rock entry depth + required embedment.</div>
+                  </div>
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">4. Final drilled depth</div>
+                    <div className="mt-1 text-sm font-semibold text-zinc-900">
+                      {pileFieldVerification.actualFinalDepth != null ? `${pileFieldVerification.actualFinalDepth.toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-600">Taken from the current verification result.</div>
+                  </div>
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">5. Actual socket achieved</div>
+                    <div className="mt-1 text-sm font-semibold text-zinc-900">
+                      {pileFieldVerification.actualSocket != null ? `${pileFieldVerification.actualSocket.toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-600">
+                      {String((verificationSummary as any)?.result?.socket_basis || designInput?.socket_basis || 'gross_socket') === 'net_competent_socket'
+                        ? 'Net competent socket after deductions.'
+                        : 'Gross socket below rock entry.'}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">6. Overdrill allowance</div>
+                    <div className="mt-1 text-sm font-semibold text-zinc-900">
+                      {pileFieldVerification.overdrillActual != null
+                        ? `${pileFieldVerification.overdrillActual.toFixed(2)} m actual`
+                        : '-'}
+                    </div>
+                    <div className="mt-1 text-[11px] text-zinc-600">
+                      Allowable: {pileFieldVerification.overdrillAllowance != null ? `${pileFieldVerification.overdrillAllowance.toFixed(2)} m` : '-'}
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className={`rounded-lg border p-3 text-sm ${
+                    pileFieldVerification.cleanOutPass === true ? 'border-emerald-200 bg-emerald-50 text-emerald-800' :
+                    pileFieldVerification.cleanOutPass === false ? 'border-amber-200 bg-amber-50 text-amber-800' :
+                    'border-zinc-200 bg-zinc-50 text-zinc-700'
+                  }`}>
+                    <div className="text-[11px] font-bold uppercase">Clean-out</div>
+                    <div className="mt-1">
+                      {pileFieldVerification.cleanOutPass === true ? 'Clean-out complete / acceptable.' :
+                       pileFieldVerification.cleanOutPass === false ? 'Clean-out still required or not yet acceptable.' :
+                       'No clean-out result recorded yet.'}
+                    </div>
+                  </div>
+                  <div className={`rounded-lg border p-3 text-sm ${
+                    pileFieldVerification.groutReady === true ? 'border-emerald-200 bg-emerald-50 text-emerald-800' :
+                    pileFieldVerification.groutReady === false ? 'border-amber-200 bg-amber-50 text-amber-800' :
+                    'border-zinc-200 bg-zinc-50 text-zinc-700'
+                  }`}>
+                    <div className="text-[11px] font-bold uppercase">Grout / approval</div>
+                    <div className="mt-1">
+                      {pileFieldVerification.groutReady === true ? 'Ready for grout / approval.' :
+                       pileFieldVerification.groutReady === false ? 'Not yet ready for grout / approval.' :
+                       'Approval state not confirmed yet.'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="mt-3 rounded-lg border bg-white p-3">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Recommended next action</div>
@@ -4443,70 +4803,11 @@ export const SiteLoggingElement: React.FC = () => {
               </div>
             </div>
 
-            {verificationSummary?.kind === 'micro_pile' && (
-              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                <PileGeometryCard
-                  verificationResult={verificationSummary?.result}
-                  torManual={toNumberOrNull(interpActualTorDepth) != null}
-                />
-
-                <ReferenceDiagramCard
-                  diagram={pileReferenceDiagram}
-                  diagramUrl={pileReferenceDiagram ? (photoUrls[pileReferenceDiagram.id] || null) : null}
-                  onEnlarge={() => setSelectedPhotoUrl(pileReferenceDiagram ? (photoUrls[pileReferenceDiagram.id] || null) : null)}
-                  onRemove={removePileReferenceDiagram}
-                  file={pileDiagramFile}
-                  onFileChange={setPileDiagramFile}
-                  caption={pileDiagramCaption}
-                  onCaptionChange={setPileDiagramCaption}
-                  onUpload={uploadPileReferenceDiagram}
-                />
-              </div>
-            )}
-
-            <div className="mt-3 rounded-lg border bg-white p-3">
-              <div className="text-[11px] font-bold uppercase text-zinc-500">Source logic</div>
-              <div className="mt-2 grid grid-cols-1 gap-2 text-sm text-zinc-700">
-                <div className="rounded-lg border bg-zinc-50 p-2">
-                  <div className="text-[11px] font-bold uppercase text-zinc-500">How ToR is determined</div>
-                  <div className="mt-1 text-[12px] whitespace-pre-wrap">
-                    {toNumberOrNull(interpActualTorDepth) != null
-                      ? `Actual ToR comes from Interpretation input: ${interpActualTorDepth} m.`
-                      : `Actual ToR is inferred from the first interval that indicates competent rock / MW-SW weathering / rock-type.`}
-                  </div>
-                </div>
-                <div className="rounded-lg border bg-zinc-50 p-2">
-                  <div className="text-[11px] font-bold uppercase text-zinc-500">How lengths are calculated</div>
-                  <div className="mt-1 text-[12px] whitespace-pre-wrap">
-                    {(verificationSummary?.kind === 'anchor' || verificationSummary?.kind === 'soil_nail') && `Anchorage/socket length = (total drilled depth - actual ToR). Overdrill = (total depth - (ToR + required socket)).`}
-                    {verificationSummary?.kind === 'micro_pile' && `Plunge length = (actual ToR - base of casing). Socket length = (total drilled depth - actual ToR). Net socket deducts weak bands when enabled. Overdrill = (total depth - (ToR + required socket)).`}
-                    {verificationSummary?.kind === 'suitability' && `Suitability verification checks working load, cycle schedule, and completion flags.`}
-                    {!verificationSummary?.kind && 'Run verification to see calculations.'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
             {(verificationSummary?.kind === 'anchor' || verificationSummary?.kind === 'soil_nail') && (
               <div className="mt-3 rounded-lg border bg-white p-3">
                 <div className="text-[11px] font-bold uppercase text-zinc-500">
                   {verificationSummary?.kind === 'soil_nail' ? 'Soil nail verification' : 'Anchor verification'}
                 </div>
-                <div className="mt-2 grid grid-cols-1 gap-2">
-                  {(verificationSummary?.table || []).map((row: any) => (
-                    <div key={row.label} className="grid grid-cols-3 gap-2 rounded-lg border p-2 text-sm">
-                      <div className="font-semibold text-zinc-800">{row.label}</div>
-                      <div className="text-zinc-600">Design: {row.design}</div>
-                      <div className="text-zinc-600">Actual: {row.actual}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {verificationSummary?.kind === 'micro_pile' && (
-              <div className="mt-3 rounded-lg border bg-white p-3">
-                <div className="text-[11px] font-bold uppercase text-zinc-500">Micro-pile verification</div>
                 <div className="mt-2 grid grid-cols-1 gap-2">
                   {(verificationSummary?.table || []).map((row: any) => (
                     <div key={row.label} className="grid grid-cols-3 gap-2 rounded-lg border p-2 text-sm">
@@ -4542,6 +4843,90 @@ export const SiteLoggingElement: React.FC = () => {
                 )) : <div className="text-sm text-zinc-500">No reasons. Current result is fully acceptable.</div>}
               </div>
             </div>
+
+            {showVerificationAdvanced && (
+              <>
+                <div className="mt-3 rounded-lg border bg-white p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Advanced engineer review</div>
+                    <button
+                      onClick={() => setActiveStep('Interpretation')}
+                      className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                    >
+                      Open interpretation
+                    </button>
+                  </div>
+                  {Array.isArray((verificationSummary as any)?.review_required_triggers) && (verificationSummary as any).review_required_triggers.length > 0 ? (
+                    <div className="mt-2 grid grid-cols-1 gap-1 rounded-lg border border-violet-200 bg-violet-50 p-2 text-[12px] text-violet-900">
+                      {(verificationSummary as any).review_required_triggers.slice(0, 6).map((t: any) => (
+                        <div key={String(t)}>{String(t)}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-sm text-zinc-600">No additional review triggers recorded.</div>
+                  )}
+                </div>
+
+                {verificationSummary?.kind === 'micro_pile' && (
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <PileGeometryCard
+                      verificationResult={verificationSummary?.result}
+                      torManual={toNumberOrNull(interpActualTorDepth) != null}
+                    />
+
+                    <ReferenceDiagramCard
+                      diagram={pileReferenceDiagram}
+                      diagramUrl={pileReferenceDiagram ? (photoUrls[pileReferenceDiagram.id] || null) : null}
+                      onEnlarge={() => setSelectedPhotoUrl(pileReferenceDiagram ? (photoUrls[pileReferenceDiagram.id] || null) : null)}
+                      onRemove={removePileReferenceDiagram}
+                      file={pileDiagramFile}
+                      onFileChange={setPileDiagramFile}
+                      caption={pileDiagramCaption}
+                      onCaptionChange={setPileDiagramCaption}
+                      onUpload={uploadPileReferenceDiagram}
+                    />
+                  </div>
+                )}
+
+                <div className="mt-3 rounded-lg border bg-white p-3">
+                  <div className="text-[11px] font-bold uppercase text-zinc-500">Source logic</div>
+                  <div className="mt-2 grid grid-cols-1 gap-2 text-sm text-zinc-700">
+                    <div className="rounded-lg border bg-zinc-50 p-2">
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">How rock entry is determined</div>
+                      <div className="mt-1 text-[12px] whitespace-pre-wrap">
+                        {toNumberOrNull(interpActualTorDepth) != null
+                          ? `Rock entry uses the manual verification input: ${interpActualTorDepth} m.`
+                          : `Rock entry is inferred from the first interval that indicates competent rock / MW-SW weathering / rock type.`}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border bg-zinc-50 p-2">
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">How lengths are calculated</div>
+                      <div className="mt-1 text-[12px] whitespace-pre-wrap">
+                        {(verificationSummary?.kind === 'anchor' || verificationSummary?.kind === 'soil_nail') && `Anchorage/socket length = (total drilled depth - rock entry). Overdrill = (total depth - (rock entry + required socket)).`}
+                        {verificationSummary?.kind === 'micro_pile' && `Plunge length = (rock entry - base of casing). Socket length = (total drilled depth - rock entry). Net socket deducts weak bands when enabled. Overdrill = (total depth - (rock entry + required socket)).`}
+                        {verificationSummary?.kind === 'suitability' && `Suitability verification checks working load, cycle schedule, and completion flags.`}
+                        {!verificationSummary?.kind && 'Run verification to see calculations.'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {verificationSummary?.kind === 'micro_pile' && (
+                  <div className="mt-3 rounded-lg border bg-white p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Micro-pile detail</div>
+                    <div className="mt-2 grid grid-cols-1 gap-2">
+                      {(verificationSummary?.table || []).map((row: any) => (
+                        <div key={row.label} className="grid grid-cols-3 gap-2 rounded-lg border p-2 text-sm">
+                          <div className="font-semibold text-zinc-800">{row.label}</div>
+                          <div className="text-zinc-600">Design: {row.design}</div>
+                          <div className="text-zinc-600">Actual: {row.actual}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 

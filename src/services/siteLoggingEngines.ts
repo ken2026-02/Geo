@@ -36,7 +36,9 @@ const inferActualTorFromIntervals = (intervals: SiteDrillingInterval[]): number 
     const rock = (item.rock_type || '').toLowerCase();
     const interpreted = (item.material_interpreted || '').toLowerCase();
     if (rock && rock !== 'not_applicable') return item.from_depth_m;
-    if (['mw', 'sw', 'fr'].includes(w)) return item.from_depth_m;
+    // Treat weathered rock selections as the practical field trigger for ToR.
+    // Field intent: once logging indicates entry into HW (or better), ToR can be inferred.
+    if (['xw', 'hw', 'mw', 'sw', 'fr'].includes(w)) return item.from_depth_m;
     if (interpreted.includes('rock') || interpreted.includes('competent')) return item.from_depth_m;
   }
   return null;
@@ -244,11 +246,11 @@ export const evaluateSiteVerification = ({
 
     const maxDepthM = drilledDepth;
 
-    // Field geometry: casing ends at "base of casing" (top of plunge), then a plunge section continues
-    // down to ToR, then the rock socket continues below ToR to final depth.
-    // No hidden fallback: if base of casing is missing, plunge length cannot be determined reliably.
+    // Field geometry: casing should plunge into rock. Use logging-derived ToR and check whether the
+    // casing tip (base of casing) is below ToR by the required amount.
+    // No hidden fallback: if base of casing is missing, casing plunge checks are unreliable.
     const baseOfCasingM = casingToDepth;
-    const plungeActual = actualTor != null && baseOfCasingM != null ? Math.max(0, actualTor - baseOfCasingM) : null;
+    const casingEmbedmentIntoRock = actualTor != null && baseOfCasingM != null ? Math.max(0, baseOfCasingM - actualTor) : null;
     const grossSocketActual = maxDepthM != null && actualTor != null ? Math.max(0, maxDepthM - actualTor) : null;
 
     const weakBandDeductionRequired = Boolean(designInput?.weak_band_deduction_required);
@@ -261,9 +263,9 @@ export const evaluateSiteVerification = ({
       : null;
 
     const extraReviewTriggers: string[] = [];
-    if (requiredPlunge > 0 && casingToDepth == null) extraReviewTriggers.push('Base of casing depth is not set; plunge length check is unreliable.');
+    if (requiredPlunge > 0 && casingToDepth == null) extraReviewTriggers.push('Base of casing depth is not set; casing plunge check is unreliable.');
 
-    const plungePass = requiredPlunge <= 0 ? true : plungeActual != null ? plungeActual >= requiredPlunge : false;
+    const plungePass = requiredPlunge <= 0 ? true : casingEmbedmentIntoRock != null ? casingEmbedmentIntoRock >= requiredPlunge : false;
     const socketPass = socketActual != null ? socketActual >= requiredSocket : false;
     const overdrillPass = overdrill != null ? overdrill <= overdrillAllowance : false;
 
@@ -274,7 +276,7 @@ export const evaluateSiteVerification = ({
     const groutReady = !groutApprovalRequired || Boolean(cleanOut?.approved_for_grouting || approval?.approved_for_grouting);
 
     const reasons: string[] = [];
-    if (!plungePass) reasons.push('Actual plunge length is below design.');
+    if (!plungePass) reasons.push('Casing plunge into rock is below design.');
     if (!socketPass) reasons.push('Actual socket length is below design.');
     if (!overdrillPass) reasons.push('Overdrill exceeds allowable limit.');
     if (!cleanOutPass) reasons.push('Clean-out is required but not recorded.');
@@ -304,9 +306,9 @@ export const evaluateSiteVerification = ({
         { label: 'Casing / base of casing', design: casingToDepth != null ? `${casingToDepth.toFixed(2)} m` : '-', actual: casingType || '-' },
         { label: 'ToR depth', design: actualTor != null ? `${actualTor.toFixed(2)} m reference` : '-', actual: actualTor != null ? `${actualTor.toFixed(2)} m` : '-' },
         {
-          label: 'Plunge length (base of casing to ToR)',
+          label: 'Casing plunge into rock (base of casing below ToR)',
           design: `${requiredPlunge.toFixed(2)} m`,
-          actual: plungeActual != null ? `${plungeActual.toFixed(2)} m` : '-',
+          actual: casingEmbedmentIntoRock != null ? `${casingEmbedmentIntoRock.toFixed(2)} m` : '-',
         },
         {
           label: socketBasis === 'net_competent_socket' ? 'Net socket length' : 'Gross socket length',
@@ -330,7 +332,7 @@ export const evaluateSiteVerification = ({
         actual_total_depth_m: maxDepthM,
         actual_tor_depth_m: actualTor,
         base_of_casing_depth_m: casingToDepth,
-        plunge_length_actual_m: plungeActual,
+        plunge_length_actual_m: casingEmbedmentIntoRock,
         base_of_socket_depth_m: maxDepthM,
         gross_socket_length_m: grossSocketActual,
         net_socket_length_m: netSocketActual,

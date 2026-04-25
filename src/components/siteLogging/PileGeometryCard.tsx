@@ -56,7 +56,7 @@ export function PileGeometryCard({
           <div className="mt-1">{badge('calc')}</div>
         </div>
         <div className="rounded-lg border bg-white p-2 ring-1 ring-zinc-200">
-          <div className="text-[11px] font-bold uppercase text-zinc-500">Plunge length</div>
+          <div className="text-[11px] font-bold uppercase text-zinc-500">Casing plunge into rock</div>
           <div className="mt-1 font-semibold text-zinc-900">{fmtLen(r.plunge_length_actual_m)}</div>
           <div className="mt-1 text-[11px] text-zinc-600">Design: {fmtLen(r.required_plunge_length_m)}</div>
           <div className="mt-1">{casingInputOk && r.actual_tor_depth_m != null ? badge('calc') : badge('missing')}</div>
@@ -84,4 +84,3 @@ export function PileGeometryCard({
     </div>
   );
 }
-
