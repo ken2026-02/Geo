@@ -171,6 +171,7 @@ export const evaluateSiteVerification = ({
   const torCard = computeTorCard(interpretation, intervals);
   const drilledDepth = maxDepth(record, intervals);
   const actualTor = torCard.actualTorDepthM;
+  const toRSource = num(interpretation?.actual_tor_depth_m) != null ? 'manual' : 'inferred';
   const overdrillAllowance = num(designInput?.max_overdrill_m) ?? 0;
 
   if (['anchor', 'soil_nail'].includes(String(element.element_type))) {
@@ -238,13 +239,44 @@ export const evaluateSiteVerification = ({
 
   if (['micro_pile', 'pile', 'permanent_casing'].includes(String(element.element_type))) {
     const requiredPlunge = num(designInput?.required_plunge_length_m) ?? 0;
-    const requiredSocket = num(designInput?.required_socket_length_m) ?? 0;
+    const governingRockCondition = String(designInput?.governing_rock_condition || 'hw').toLowerCase();
+    const requiredSocketHw = num(designInput?.required_socket_hw_m);
+    const requiredSocketMw = num(designInput?.required_socket_mw_m);
+    const legacyRequiredSocket = num(designInput?.required_socket_length_m);
     const socketBasis = String(designInput?.socket_basis || 'gross_socket');
     const overdrillAllowance = num(designInput?.max_overdrill_m) ?? 0;
     const casingToDepth = num(designInput?.casing_to_depth_m) ?? null; // "Base of casing depth" in Setup UI
     const casingType = String(designInput?.casing_type || '').trim() || null;
 
-    const maxDepthM = drilledDepth;
+    const finalDepthOverride = num(designInput?.final_drilled_depth_m);
+    const maxDepthM = finalDepthOverride ?? drilledDepth;
+
+    const uBoltZone = num(designInput?.u_bolt_zone_length_m);
+    const lowestUboltManual = num(designInput?.lowest_ubolt_depth_m);
+    const lowestUboltCalculated =
+      lowestUboltManual == null && casingToDepth != null && uBoltZone != null ? casingToDepth + uBoltZone : null;
+    const lowestUboltDepthM = lowestUboltManual ?? lowestUboltCalculated;
+    const lowestUboltSource = lowestUboltManual != null ? 'manual' : lowestUboltCalculated != null ? 'calculated' : 'missing';
+
+    const requiredAnchorageBelowUboltDirect = num(designInput?.required_min_anchorage_below_ubolt_m);
+    const legacyAnchHw = num(designInput?.min_anchorage_hw_m);
+    const legacyAnchMw = num(designInput?.min_anchorage_mw_m);
+    const legacyAnchMax = [legacyAnchHw, legacyAnchMw]
+      .filter((v): v is number => v != null)
+      .reduce((acc, v) => Math.max(acc, v), 0);
+    const requiredAnchorageBelowUboltM =
+      requiredAnchorageBelowUboltDirect != null ? requiredAnchorageBelowUboltDirect : legacyAnchMax > 0 ? legacyAnchMax : null;
+
+    const requiredSocketM = (() => {
+      if (governingRockCondition === 'hw') return requiredSocketHw ?? legacyRequiredSocket ?? null;
+      if (governingRockCondition === 'mw') return requiredSocketMw ?? legacyRequiredSocket ?? null;
+      if (governingRockCondition === 'mixed') {
+        const mx = [requiredSocketHw, requiredSocketMw].filter((v): v is number => v != null);
+        if (mx.length) return Math.max(...mx);
+        return legacyRequiredSocket ?? null;
+      }
+      return legacyRequiredSocket ?? requiredSocketHw ?? requiredSocketMw ?? null;
+    })();
 
     // Field geometry: casing should plunge into rock. Use logging-derived ToR and check whether the
     // casing tip (base of casing) is below ToR by the required amount.
@@ -258,15 +290,28 @@ export const evaluateSiteVerification = ({
     const netSocketActual = grossSocketActual != null ? Math.max(0, grossSocketActual - weakBandThickness) : null;
     const socketActual = socketBasis === 'net_competent_socket' ? netSocketActual : grossSocketActual;
 
-    const overdrill = maxDepthM != null && actualTor != null && requiredSocket > 0
-      ? Math.max(0, maxDepthM - (actualTor + requiredSocket))
-      : null;
+    const anchorageBelowUboltActual =
+      maxDepthM != null && lowestUboltDepthM != null ? Math.max(0, maxDepthM - lowestUboltDepthM) : null;
 
-    const extraReviewTriggers: string[] = [];
-    if (requiredPlunge > 0 && casingToDepth == null) extraReviewTriggers.push('Base of casing depth is not set; casing plunge check is unreliable.');
+    const requiredDepthFromSocket =
+      actualTor != null && requiredSocketM != null ? actualTor + requiredSocketM : null;
+    const requiredDepthFromAnchorage =
+      lowestUboltDepthM != null && requiredAnchorageBelowUboltM != null ? lowestUboltDepthM + requiredAnchorageBelowUboltM : null;
+    const minimumRequiredFinalDepth =
+      requiredDepthFromSocket != null && requiredDepthFromAnchorage != null
+        ? Math.max(requiredDepthFromSocket, requiredDepthFromAnchorage)
+        : requiredDepthFromSocket ?? requiredDepthFromAnchorage ?? null;
+
+    const overdrill =
+      maxDepthM != null && minimumRequiredFinalDepth != null ? (maxDepthM - minimumRequiredFinalDepth) : null;
 
     const plungePass = requiredPlunge <= 0 ? true : casingEmbedmentIntoRock != null ? casingEmbedmentIntoRock >= requiredPlunge : false;
-    const socketPass = socketActual != null ? socketActual >= requiredSocket : false;
+    const socketPass = requiredSocketM != null && grossSocketActual != null ? grossSocketActual >= requiredSocketM : false;
+    const anchoragePass =
+      requiredAnchorageBelowUboltM != null && anchorageBelowUboltActual != null
+        ? anchorageBelowUboltActual >= requiredAnchorageBelowUboltM
+        : false;
+    const depthPass = minimumRequiredFinalDepth != null && maxDepthM != null ? maxDepthM >= minimumRequiredFinalDepth : false;
     const overdrillPass = overdrill != null ? overdrill <= overdrillAllowance : false;
 
     const cleanOutRequired = Boolean(designInput?.clean_out_required);
@@ -276,22 +321,47 @@ export const evaluateSiteVerification = ({
     const groutReady = !groutApprovalRequired || Boolean(cleanOut?.approved_for_grouting || approval?.approved_for_grouting);
 
     const reasons: string[] = [];
-    if (!plungePass) reasons.push('Casing plunge into rock is below design.');
-    if (!socketPass) reasons.push('Actual socket length is below design.');
+    const extraReviewTriggers: string[] = [];
+    if (finalDepthOverride != null) extraReviewTriggers.push('Final drilled depth is provided manually (override).');
+    if (governingRockCondition === 'mixed') extraReviewTriggers.push('Governing rock condition is mixed/uncertain.');
+    if (weakBandDeductionRequired) extraReviewTriggers.push('Weak band deduction is enabled (review deductions).');
+    if (lowestUboltSource === 'calculated') extraReviewTriggers.push('Lowest U-bolt depth is assumed from base of casing + allowance.');
+    if (legacyRequiredSocket != null && (requiredSocketHw == null || requiredSocketMw == null)) extraReviewTriggers.push('Using legacy socket requirement (single value).');
+    if (requiredAnchorageBelowUboltDirect == null && legacyAnchMax > 0) extraReviewTriggers.push('Using legacy anchorage requirement (HW/MW max).');
+    if (requiredPlunge > 0 && casingToDepth == null) extraReviewTriggers.push('Base of casing depth is not set; casing plunge check is unreliable.');
+    if (actualTor == null) extraReviewTriggers.push('Top of rock is not set (manual) and could not be inferred from logging.');
+    if (requiredSocketM == null) extraReviewTriggers.push('Required socket length is missing.');
+    if (requiredAnchorageBelowUboltM == null) extraReviewTriggers.push('Required anchorage below lowest U-bolt is missing.');
+    if (lowestUboltDepthM == null) extraReviewTriggers.push('Lowest U-bolt depth is missing (manual or calculated).');
+    if (minimumRequiredFinalDepth == null) extraReviewTriggers.push('Minimum required final drilled depth could not be determined.');
+
+    const NEAR_MARGIN_M = 0.2;
+    const near = (actual: number | null, req: number | null) =>
+      actual != null && req != null ? Math.abs(actual - req) <= NEAR_MARGIN_M : false;
+
+    if (!plungePass) reasons.push('Casing plunge into rock is below required.');
+    if (!anchoragePass) reasons.push('Anchorage below lowest U-bolt is below required.');
+    if (!socketPass) reasons.push('Rock socket / embedment is below required.');
+    if (!depthPass) reasons.push('Final drilled depth is below the governing minimum required depth.');
     if (!overdrillPass) reasons.push('Overdrill exceeds allowable limit.');
     if (!cleanOutPass) reasons.push('Clean-out is required but not recorded.');
     if (!groutReady) reasons.push('Grout approval is required but not yet confirmed.');
 
+    if (near(casingEmbedmentIntoRock, requiredPlunge)) extraReviewTriggers.push('Casing plunge is close to minimum.');
+    if (near(anchorageBelowUboltActual, requiredAnchorageBelowUboltM)) extraReviewTriggers.push('Anchorage below U-bolt is close to minimum.');
+    if (near(grossSocketActual, requiredSocketM)) extraReviewTriggers.push('Socket / embedment is close to minimum.');
+    if (near(maxDepthM, minimumRequiredFinalDepth)) extraReviewTriggers.push('Final depth is close to minimum required depth.');
+
+    // Pile verification status is intentionally simple for field use: pass / review_required / fail.
     const baseStatus: Exclude<VerificationSummary['status'], 'review_required'> =
-      reasons.length === 0 ? 'pass' : groutReady ? 'conditional' : 'fail';
+      reasons.length === 0 ? 'pass' : 'fail';
     const reviewTriggers = [...interpRel.triggers, ...fieldRel.triggers, ...extraReviewTriggers];
     const status: VerificationSummary['status'] =
       baseStatus === 'fail' ? 'fail' :
       extraReviewTriggers.length ? 'review_required' :
       interpRel.level === 'low' ? 'review_required' :
       fieldRel.level === 'low' ? 'review_required' :
-      baseStatus === 'pass' && (interpRel.level === 'medium' || fieldRel.level === 'medium') ? 'conditional' :
-      baseStatus;
+      'pass';
 
     return {
       kind: 'micro_pile',
@@ -303,28 +373,56 @@ export const evaluateSiteVerification = ({
         notes: reviewTriggers,
       },
       table: [
-        { label: 'Casing / base of casing', design: casingToDepth != null ? `${casingToDepth.toFixed(2)} m` : '-', actual: casingType || '-' },
-        { label: 'ToR depth', design: actualTor != null ? `${actualTor.toFixed(2)} m reference` : '-', actual: actualTor != null ? `${actualTor.toFixed(2)} m` : '-' },
+        { label: 'Top of rock', design: '-', actual: actualTor != null ? `${actualTor.toFixed(2)} m (${toRSource})` : '-' },
+        { label: 'Base of casing depth', design: '-', actual: baseOfCasingM != null ? `${baseOfCasingM.toFixed(2)} m` : '-' },
         {
-          label: 'Casing plunge into rock (base of casing below ToR)',
+          label: 'Actual casing plunge into rock',
           design: `${requiredPlunge.toFixed(2)} m`,
           actual: casingEmbedmentIntoRock != null ? `${casingEmbedmentIntoRock.toFixed(2)} m` : '-',
         },
         {
-          label: socketBasis === 'net_competent_socket' ? 'Net socket length' : 'Gross socket length',
-          design: `${requiredSocket.toFixed(2)} m`,
-          actual: socketActual != null ? `${socketActual.toFixed(2)} m` : '-',
+          label: 'Lowest U-bolt depth',
+          design: lowestUboltSource === 'calculated' && uBoltZone != null ? `Base + ${uBoltZone.toFixed(2)} m` : '-',
+          actual: lowestUboltDepthM != null ? `${lowestUboltDepthM.toFixed(2)} m (${lowestUboltSource})` : '-',
         },
-        weakBandDeductionRequired
-          ? { label: 'Weak band deduction', design: '-', actual: `${weakBandThickness.toFixed(2)} m` }
-          : { label: 'Weak band deduction', design: '-', actual: 'Not applied' },
-        { label: 'Allowable overdrill', design: `${overdrillAllowance.toFixed(2)} m`, actual: overdrill != null ? `${overdrill.toFixed(2)} m` : '-' },
+        {
+          label: 'Actual anchorage below lowest U-bolt',
+          design: requiredAnchorageBelowUboltM != null ? `${requiredAnchorageBelowUboltM.toFixed(2)} m` : '-',
+          actual: anchorageBelowUboltActual != null ? `${anchorageBelowUboltActual.toFixed(2)} m` : '-',
+        },
+        {
+          label: 'Actual rock socket / embedment length',
+          design: requiredSocketM != null ? `${requiredSocketM.toFixed(2)} m (${governingRockCondition.toUpperCase()})` : '-',
+          actual: grossSocketActual != null ? `${grossSocketActual.toFixed(2)} m` : '-',
+        },
+        {
+          label: 'Minimum required final drilled depth',
+          design: '-',
+          actual: minimumRequiredFinalDepth != null ? `${minimumRequiredFinalDepth.toFixed(2)} m` : '-',
+        },
+        {
+          label: 'Actual final drilled depth',
+          design: minimumRequiredFinalDepth != null ? `>= ${minimumRequiredFinalDepth.toFixed(2)} m` : '-',
+          actual: maxDepthM != null ? `${maxDepthM.toFixed(2)} m` : '-',
+        },
+        {
+          label: 'Overdrill',
+          design: `${overdrillAllowance.toFixed(2)} m`,
+          actual: overdrill != null ? `${overdrill.toFixed(2)} m` : '-',
+        },
         { label: 'Clean-out required', design: cleanOutRequired ? 'Yes' : 'No', actual: cleanOutPass ? 'OK' : 'Missing' },
         { label: 'Grout approval required', design: groutApprovalRequired ? 'Yes' : 'No', actual: groutReady ? 'OK' : 'Not confirmed' },
       ],
       result: {
         required_plunge_length_m: requiredPlunge,
-        required_socket_length_m: requiredSocket,
+        governing_rock_condition: governingRockCondition,
+        required_socket_hw_m: requiredSocketHw,
+        required_socket_mw_m: requiredSocketMw,
+        required_socket_length_m: requiredSocketM,
+        required_anchorage_below_ubolt_m: requiredAnchorageBelowUboltM,
+        u_bolt_zone_length_m: uBoltZone,
+        lowest_ubolt_depth_m: lowestUboltDepthM,
+        lowest_ubolt_source: lowestUboltSource,
         socket_basis: socketBasis,
         casing_to_depth_m: casingToDepth,
         casing_type: casingType,
@@ -337,9 +435,13 @@ export const evaluateSiteVerification = ({
         gross_socket_length_m: grossSocketActual,
         net_socket_length_m: netSocketActual,
         weak_band_deduction_m: weakBandThickness,
+        anchorage_below_ubolt_actual_m: anchorageBelowUboltActual,
+        minimum_required_final_depth_m: minimumRequiredFinalDepth,
         overdrill_length_m: overdrill,
         plunge_pass: plungePass,
+        anchorage_pass: anchoragePass,
         socket_pass: socketPass,
+        final_depth_pass: depthPass,
         overdrill_pass: overdrillPass,
         clean_out_pass: cleanOutPass,
         grout_ready: groutReady,
@@ -476,7 +578,7 @@ export const buildSiteOutputReport = ({
     if (verification.status === 'review_required') return 'Engineer review required (verification reliability is low).';
     if (verReasons.some((r) => /clean-?out/i.test(r))) return 'Perform clean-out and re-run verification.';
     if (verReasons.some((r) => /grout approval/i.test(r))) return 'Engineer review / grout approval required.';
-    if (verReasons.some((r) => /below design/i.test(r))) return 'Continue drilling to achieve required lengths.';
+    if (verReasons.some((r) => /below (design|required)/i.test(r) || /below the governing minimum/i.test(r))) return 'Continue drilling to achieve required lengths.';
     if (verification.status === 'pass') return 'Stop at current depth (meets design).';
     return 'Review intervals and interpretation, then re-run verification.';
   };

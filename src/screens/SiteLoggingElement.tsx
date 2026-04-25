@@ -287,7 +287,17 @@ export const SiteLoggingElement: React.FC = () => {
     design_debonded_length_m: null,
     design_total_length_m: null,
     required_plunge_length_m: null,
+    // Legacy single socket requirement (kept for existing records)
     required_socket_length_m: null,
+
+    // Pile (field) requirements
+    governing_rock_condition: 'hw', // 'hw' | 'mw' | 'mixed'
+    required_socket_hw_m: null,
+    required_socket_mw_m: null,
+    required_min_anchorage_below_ubolt_m: null,
+    u_bolt_zone_length_m: null,
+    lowest_ubolt_depth_m: null,
+    final_drilled_depth_m: null, // optional manual override for verification
     socket_basis: 'gross_socket',
     allow_overdrill: true,
     max_overdrill_m: null,
@@ -300,6 +310,7 @@ export const SiteLoggingElement: React.FC = () => {
     inclination_to_horizontal_deg: null,
     horizontal_bearing: '',
     approval_notes: '',
+    bar_id: '',
 
     // Suitability (optional section; stored only when enabled)
     cycle_schedule: [],
@@ -316,6 +327,13 @@ export const SiteLoggingElement: React.FC = () => {
   const [pileHoleDiaRaw, setPileHoleDiaRaw] = useState('');
   const [pileBaseCasingRaw, setPileBaseCasingRaw] = useState('');
   const [pileMinPlungeRaw, setPileMinPlungeRaw] = useState('');
+  const [pileUboltZoneRaw, setPileUboltZoneRaw] = useState('');
+  const [pileLowestUboltRaw, setPileLowestUboltRaw] = useState('');
+  const [pileMinAnchBelowUboltRaw, setPileMinAnchBelowUboltRaw] = useState('');
+  const [pileSocketHwRaw, setPileSocketHwRaw] = useState('');
+  const [pileSocketMwRaw, setPileSocketMwRaw] = useState('');
+  const [pileFinalDepthRaw, setPileFinalDepthRaw] = useState('');
+  // Legacy raw inputs (kept for existing records; advanced-only if shown)
   const [pileMinSocketRaw, setPileMinSocketRaw] = useState('');
   const [pileMinAnchHwRaw, setPileMinAnchHwRaw] = useState('');
   const [pileMinAnchMwRaw, setPileMinAnchMwRaw] = useState('');
@@ -966,11 +984,11 @@ export const SiteLoggingElement: React.FC = () => {
 
     const needsCleanOut = result?.clean_out_pass === false || reasons.some((r) => /clean-?out/i.test(r));
     const needsGroutApproval = result?.grout_ready === false || reasons.some((r) => /grout approval/i.test(r));
-    const needsMoreDepth = reasons.some((r) => /below design/i.test(r));
+    const needsMoreDepth = reasons.some((r) => /below (design|required)/i.test(r) || /below the governing minimum/i.test(r));
     const overdrillIssue = reasons.some((r) => /overdrill/i.test(r));
     const torManual = toNumberOrNull(interpActualTorDepth) != null;
 
-    if (!torManual && (needsMoreDepth || status === 'fail' || status === 'review_required')) push('Recheck interpretation (confirm actual ToR).');
+    if (!torManual && (needsMoreDepth || status === 'fail' || status === 'review_required')) push('Confirm rock entry depth (manual or inferred from logging).');
     if (needsMoreDepth) push('Continue drilling to meet design length(s).');
     if (needsCleanOut) push('Clean-out required before grouting.');
     if (needsGroutApproval) push('Engineer review / grout approval required.');
@@ -986,35 +1004,6 @@ export const SiteLoggingElement: React.FC = () => {
     if (actions.length === 0) push('Continue drilling (review intervals and verification).');
     return actions;
   }, [verificationSummary, interpActualTorDepth]);
-
-  const pileFieldVerification = useMemo(() => {
-    const result: Record<string, any> = verificationSummary?.result && typeof verificationSummary.result === 'object' ? verificationSummary.result : {};
-    const actualRockEntry = toNumberOrNull(interpActualTorDepth) ?? inferredTorDepth;
-    const requiredSocket = toNumberOrNull(String(result?.required_socket_length_m ?? designInput?.required_socket_length_m ?? ''));
-    const actualFinalDepth = toNumberOrNull(String(result?.actual_total_depth_m ?? ''));
-    const actualSocket =
-      String(result?.socket_basis || designInput?.socket_basis || 'gross_socket') === 'net_competent_socket'
-        ? toNumberOrNull(String(result?.net_socket_length_m ?? ''))
-        : toNumberOrNull(String(result?.gross_socket_length_m ?? ''));
-    const minFinalDepth =
-      actualRockEntry != null && requiredSocket != null
-        ? actualRockEntry + requiredSocket
-        : null;
-
-    return {
-      actualRockEntry,
-      requiredSocket,
-      actualFinalDepth,
-      actualSocket,
-      minFinalDepth,
-      plungeRequired: toNumberOrNull(String(result?.required_plunge_length_m ?? designInput?.required_plunge_length_m ?? '')),
-      plungeActual: toNumberOrNull(String(result?.plunge_length_actual_m ?? '')),
-      overdrillAllowance: toNumberOrNull(String(result?.max_overdrill_m ?? designInput?.max_overdrill_m ?? '')),
-      overdrillActual: toNumberOrNull(String(result?.overdrill_length_m ?? '')),
-      cleanOutPass: result?.clean_out_pass,
-      groutReady: result?.grout_ready,
-    };
-  }, [verificationSummary, designInput, interpActualTorDepth, inferredTorDepth]);
 
   const pileReferenceDiagram = useMemo(() => {
     const list = sitePhotos.filter((p: any) => String(p.photo_type || '').trim() === PHOTO_TYPE_REFERENCE_DIAGRAM);
@@ -1177,6 +1166,12 @@ export const SiteLoggingElement: React.FC = () => {
     try {
       setPileBaseCasingRaw(currentDesignInput.casing_to_depth_m != null ? String(currentDesignInput.casing_to_depth_m) : '');
       setPileMinPlungeRaw(currentDesignInput.required_plunge_length_m != null ? String(currentDesignInput.required_plunge_length_m) : '');
+      setPileUboltZoneRaw(currentDesignInput.u_bolt_zone_length_m != null ? String(currentDesignInput.u_bolt_zone_length_m) : '');
+      setPileLowestUboltRaw(currentDesignInput.lowest_ubolt_depth_m != null ? String(currentDesignInput.lowest_ubolt_depth_m) : '');
+      setPileMinAnchBelowUboltRaw(currentDesignInput.required_min_anchorage_below_ubolt_m != null ? String(currentDesignInput.required_min_anchorage_below_ubolt_m) : '');
+      setPileSocketHwRaw(currentDesignInput.required_socket_hw_m != null ? String(currentDesignInput.required_socket_hw_m) : '');
+      setPileSocketMwRaw(currentDesignInput.required_socket_mw_m != null ? String(currentDesignInput.required_socket_mw_m) : '');
+      setPileFinalDepthRaw(currentDesignInput.final_drilled_depth_m != null ? String(currentDesignInput.final_drilled_depth_m) : '');
       setPileMinSocketRaw(currentDesignInput.required_socket_length_m != null ? String(currentDesignInput.required_socket_length_m) : '');
       setPileMinAnchHwRaw(currentDesignInput.min_anchorage_hw_m != null ? String(currentDesignInput.min_anchorage_hw_m) : '');
       setPileMinAnchMwRaw(currentDesignInput.min_anchorage_mw_m != null ? String(currentDesignInput.min_anchorage_mw_m) : '');
@@ -2568,17 +2563,89 @@ export const SiteLoggingElement: React.FC = () => {
                     />
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Min socket length (m)"
+                      placeholder="U-bolt zone allowance (m)"
                       inputMode="decimal"
-                      value={pileMinSocketRaw}
-                      onChange={(e) => setPileMinSocketRaw(e.target.value)}
-                      onBlur={() => setDesignInput({ ...designInput, required_socket_length_m: parseNumberOrNull(pileMinSocketRaw) })}
+                      value={pileUboltZoneRaw}
+                      onChange={(e) => setPileUboltZoneRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, u_bolt_zone_length_m: parseNumberOrNull(pileUboltZoneRaw) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Lowest U-bolt depth (m, optional)"
+                      inputMode="decimal"
+                      value={pileLowestUboltRaw}
+                      onChange={(e) => setPileLowestUboltRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, lowest_ubolt_depth_m: parseNumberOrNull(pileLowestUboltRaw) })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const base = parseNumberOrNull(pileBaseCasingRaw);
+                        const zone = parseNumberOrNull(pileUboltZoneRaw);
+                        if (base == null || zone == null) {
+                          alert('Enter base of casing depth and U-bolt zone allowance first.');
+                          return;
+                        }
+                        const computed = base + zone;
+                        setPileLowestUboltRaw(computed.toFixed(2));
+                        setDesignInput({ ...designInput, lowest_ubolt_depth_m: computed });
+                      }}
+                      className="col-span-2 rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                    >
+                      Calculate lowest U-bolt = base of casing + allowance
+                    </button>
+                    <input
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Required anchorage below lowest U-bolt (m)"
+                      inputMode="decimal"
+                      value={pileMinAnchBelowUboltRaw}
+                      onChange={(e) => setPileMinAnchBelowUboltRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, required_min_anchorage_below_ubolt_m: parseNumberOrNull(pileMinAnchBelowUboltRaw) })}
+                    />
+                    <select
+                      value={String(designInput.governing_rock_condition || 'hw')}
+                      onChange={(e) => setDesignInput({ ...designInput, governing_rock_condition: e.target.value })}
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                    >
+                      <option value="hw">Governing rock condition: HW</option>
+                      <option value="mw">Governing rock condition: MW</option>
+                      <option value="mixed">Governing rock condition: mixed (engineer review)</option>
+                    </select>
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Required HW socket (m)"
+                      inputMode="decimal"
+                      value={pileSocketHwRaw}
+                      onChange={(e) => setPileSocketHwRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, required_socket_hw_m: parseNumberOrNull(pileSocketHwRaw) })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Required MW socket (m)"
+                      inputMode="decimal"
+                      value={pileSocketMwRaw}
+                      onChange={(e) => setPileSocketMwRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, required_socket_mw_m: parseNumberOrNull(pileSocketMwRaw) })}
                     />
                     <input
                       className="col-span-2 rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Anchor bar size (optional)"
+                      placeholder="Bar / pile ID (optional)"
+                      value={designInput.bar_id ?? ''}
+                      onChange={(e) => setDesignInput({ ...designInput, bar_id: e.target.value })}
+                    />
+                    <input
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Anchor / bar size (optional)"
                       value={designInput.anchor_bar_size ?? ''}
                       onChange={(e) => setDesignInput({ ...designInput, anchor_bar_size: e.target.value })}
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Final drilled depth (m, optional manual)"
+                      inputMode="decimal"
+                      value={pileFinalDepthRaw}
+                      onChange={(e) => setPileFinalDepthRaw(e.target.value)}
+                      onBlur={() => setDesignInput({ ...designInput, final_drilled_depth_m: parseNumberOrNull(pileFinalDepthRaw) })}
                     />
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
@@ -2587,7 +2654,6 @@ export const SiteLoggingElement: React.FC = () => {
                       value={designInput.max_overdrill_m ?? ''}
                       onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })}
                     />
-                    <div />
                     <textarea
                       className="col-span-2 min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
                       placeholder="Approval notes (optional)"
@@ -4706,89 +4772,51 @@ export const SiteLoggingElement: React.FC = () => {
             </div>
 
             {verificationSummary?.kind === 'micro_pile' && (
-              <div className="mt-3 rounded-lg border bg-white p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-[11px] font-bold uppercase text-zinc-500">Field depth check</div>
-                  <div className="text-[11px] text-zinc-500">Required vs actual</div>
-                </div>
-                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                  <div className="rounded-lg border bg-zinc-50 p-3">
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">1. Where did rock start?</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-900">
-                      {pileFieldVerification.actualRockEntry != null ? `${pileFieldVerification.actualRockEntry.toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-1 text-[11px] text-zinc-600">
-                      {toNumberOrNull(interpActualTorDepth) != null ? 'Manual verification input' : 'Inferred from logging'}
-                    </div>
+              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="rounded-lg border bg-white p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Pile verification (field)</div>
+                    <div className="text-[11px] text-zinc-500">Design vs actual</div>
                   </div>
-                  <div className="rounded-lg border bg-zinc-50 p-3">
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">2. Required rock embedment</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-900">
-                      {pileFieldVerification.requiredSocket != null ? `${pileFieldVerification.requiredSocket.toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-1 text-[11px] text-zinc-600">From Setup minimum socket / rock embedment.</div>
-                  </div>
-                  <div className="rounded-lg border bg-zinc-50 p-3">
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">3. Minimum final drilled depth</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-900">
-                      {pileFieldVerification.minFinalDepth != null ? `${pileFieldVerification.minFinalDepth.toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-1 text-[11px] text-zinc-600">Rock entry depth + required embedment.</div>
-                  </div>
-                  <div className="rounded-lg border bg-zinc-50 p-3">
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">4. Final drilled depth</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-900">
-                      {pileFieldVerification.actualFinalDepth != null ? `${pileFieldVerification.actualFinalDepth.toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-1 text-[11px] text-zinc-600">Taken from the current verification result.</div>
-                  </div>
-                  <div className="rounded-lg border bg-zinc-50 p-3">
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">5. Actual socket achieved</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-900">
-                      {pileFieldVerification.actualSocket != null ? `${pileFieldVerification.actualSocket.toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-1 text-[11px] text-zinc-600">
-                      {String((verificationSummary as any)?.result?.socket_basis || designInput?.socket_basis || 'gross_socket') === 'net_competent_socket'
-                        ? 'Net competent socket after deductions.'
-                        : 'Gross socket below rock entry.'}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border bg-zinc-50 p-3">
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">6. Overdrill allowance</div>
-                    <div className="mt-1 text-sm font-semibold text-zinc-900">
-                      {pileFieldVerification.overdrillActual != null
-                        ? `${pileFieldVerification.overdrillActual.toFixed(2)} m actual`
-                        : '-'}
-                    </div>
-                    <div className="mt-1 text-[11px] text-zinc-600">
-                      Allowable: {pileFieldVerification.overdrillAllowance != null ? `${pileFieldVerification.overdrillAllowance.toFixed(2)} m` : '-'}
-                    </div>
+                  <div className="mt-2 grid grid-cols-1 gap-2">
+                    {(verificationSummary?.table || []).map((row: any) => (
+                      <div key={row.label} className="grid grid-cols-3 gap-2 rounded-lg border p-2 text-sm">
+                        <div className="font-semibold text-zinc-800">{row.label}</div>
+                        <div className="text-zinc-600">Design: {row.design}</div>
+                        <div className="text-zinc-600">Actual: {row.actual}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                  <div className={`rounded-lg border p-3 text-sm ${
-                    pileFieldVerification.cleanOutPass === true ? 'border-emerald-200 bg-emerald-50 text-emerald-800' :
-                    pileFieldVerification.cleanOutPass === false ? 'border-amber-200 bg-amber-50 text-amber-800' :
-                    'border-zinc-200 bg-zinc-50 text-zinc-700'
-                  }`}>
-                    <div className="text-[11px] font-bold uppercase">Clean-out</div>
-                    <div className="mt-1">
-                      {pileFieldVerification.cleanOutPass === true ? 'Clean-out complete / acceptable.' :
-                       pileFieldVerification.cleanOutPass === false ? 'Clean-out still required or not yet acceptable.' :
-                       'No clean-out result recorded yet.'}
+
+                <div className="rounded-lg border bg-zinc-50 p-3">
+                  <div className="text-[11px] font-bold uppercase text-zinc-600">Geometry summary</div>
+                  <div className="mt-2 text-sm text-zinc-700">
+                    <div>1. Ground / collar level</div>
+                    <div className="ml-4 text-zinc-600">(datum selected in Setup; depths measured downward)</div>
+                    <div className="mt-2">2. Top of rock</div>
+                    <div className="ml-4 text-zinc-600">
+                      {verificationSummary?.result?.actual_tor_depth_m != null ? `${Number(verificationSummary.result.actual_tor_depth_m).toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-2">3. Base of casing</div>
+                    <div className="ml-4 text-zinc-600">
+                      {verificationSummary?.result?.base_of_casing_depth_m != null ? `${Number(verificationSummary.result.base_of_casing_depth_m).toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-2">4. U-bolt zone and lowest U-bolt</div>
+                    <div className="ml-4 text-zinc-600">
+                      Zone allowance: {verificationSummary?.result?.u_bolt_zone_length_m != null ? `${Number(verificationSummary.result.u_bolt_zone_length_m).toFixed(2)} m` : '-'}; lowest U-bolt: {verificationSummary?.result?.lowest_ubolt_depth_m != null ? `${Number(verificationSummary.result.lowest_ubolt_depth_m).toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-2">5. Required anchorage below lowest U-bolt</div>
+                    <div className="ml-4 text-zinc-600">
+                      {verificationSummary?.result?.required_anchorage_below_ubolt_m != null ? `${Number(verificationSummary.result.required_anchorage_below_ubolt_m).toFixed(2)} m` : '-'}
+                    </div>
+                    <div className="mt-2">6. Final drilled depth / pile bottom</div>
+                    <div className="ml-4 text-zinc-600">
+                      {verificationSummary?.result?.actual_total_depth_m != null ? `${Number(verificationSummary.result.actual_total_depth_m).toFixed(2)} m` : '-'}
                     </div>
                   </div>
-                  <div className={`rounded-lg border p-3 text-sm ${
-                    pileFieldVerification.groutReady === true ? 'border-emerald-200 bg-emerald-50 text-emerald-800' :
-                    pileFieldVerification.groutReady === false ? 'border-amber-200 bg-amber-50 text-amber-800' :
-                    'border-zinc-200 bg-zinc-50 text-zinc-700'
-                  }`}>
-                    <div className="text-[11px] font-bold uppercase">Grout / approval</div>
-                    <div className="mt-1">
-                      {pileFieldVerification.groutReady === true ? 'Ready for grout / approval.' :
-                       pileFieldVerification.groutReady === false ? 'Not yet ready for grout / approval.' :
-                       'Approval state not confirmed yet.'}
-                    </div>
+                  <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-2 text-[11px] text-zinc-600">
+                    Reference diagram is guidance only (available under Advanced). Calculations use only Setup inputs and logged depths.
                   </div>
                 </div>
               </div>
@@ -4903,7 +4931,7 @@ export const SiteLoggingElement: React.FC = () => {
                       <div className="text-[11px] font-bold uppercase text-zinc-500">How lengths are calculated</div>
                       <div className="mt-1 text-[12px] whitespace-pre-wrap">
                         {(verificationSummary?.kind === 'anchor' || verificationSummary?.kind === 'soil_nail') && `Anchorage/socket length = (total drilled depth - rock entry). Overdrill = (total depth - (rock entry + required socket)).`}
-                        {verificationSummary?.kind === 'micro_pile' && `Plunge length = (rock entry - base of casing). Socket length = (total drilled depth - rock entry). Net socket deducts weak bands when enabled. Overdrill = (total depth - (rock entry + required socket)).`}
+                        {verificationSummary?.kind === 'micro_pile' && `Casing plunge = (base of casing - rock entry). Socket/embedment = (final depth - rock entry). Anchorage below lowest U-bolt = (final depth - lowest U-bolt depth). Minimum required final depth = max(rock entry + required socket, lowest U-bolt depth + required anchorage). Overdrill = (final depth - minimum required final depth).`}
                         {verificationSummary?.kind === 'suitability' && `Suitability verification checks working load, cycle schedule, and completion flags.`}
                         {!verificationSummary?.kind && 'Run verification to see calculations.'}
                       </div>
