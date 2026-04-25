@@ -35,6 +35,13 @@ import { buildSiteOutputReport, computeTorCard, evaluateSiteVerification } from 
 import { LOGGING_PHRASE_SEEDS, SITE_GROUND_REFERENCE_SEEDS } from '../services/siteLoggingSeeds';
 import { exportSiteLoggingElementPack, importSiteLoggingElementPack } from '../services/siteLoggingPackService';
 import {
+  buildSiteLoggingReferenceTemplate,
+  mergeUniquePhrases,
+  validateSiteLoggingReferenceTemplate,
+  type SiteLoggingReferenceTemplateV1,
+} from '../services/siteLoggingReferenceTemplate';
+import { SITE_LOGGING_STARTER_TEMPLATES } from '../services/siteLoggingStarterTemplates';
+import {
   PHOTO_TYPE_REFERENCE_DIAGRAM,
   formatElementTypeShortLabel,
   formatStatusLabel,
@@ -91,42 +98,8 @@ const parseJsonObject = (text: string): Record<string, any> | null => {
   }
 };
 
-const DRILLING_RESPONSES: Array<{ id: string; label: string }> = [
-  { id: 'normal_drilling', label: 'Normal drilling' },
-  { id: 'slow_drilling', label: 'Slow drilling' },
-  { id: 'rapid_drilling', label: 'Rapid drilling' },
-  { id: 'hammer_bounce', label: 'Hammer bounce' },
-  { id: 'collapse', label: 'Collapse' },
-  { id: 're_drill', label: 'Re-drill' },
-  { id: 'add_casing', label: 'Add casing' },
-  { id: 'add_rod', label: 'Add rod' },
-  { id: 'change_bit', label: 'Change bit' },
-  { id: 'flush_hole', label: 'Flush hole' },
-  { id: 'sediment_observed', label: 'Sediment observed' },
-];
-
-const GEOTECH_UNITS = [
-  'fill',
-  'colluvium',
-  'colluvium_boulders',
-  'residual_soil',
-  'extremely_weathered_material',
-  'granodiorite',
-  'argillite_greywacke',
-] as const;
-
-const SITE_RISK_FLAGS = [
-  'anisotropy',
-  'groundwater_influence',
-  'velocity_inversion',
-  'rock_step',
-  'rapid_depth_variation',
-  'weathering_profile',
-  'boulder_anomaly',
-  'elevation_discrepancy',
-  'offset_uncertainty',
-  'low_confidence_tor',
-] as const;
+// Avoid hard-coded phrase lists here. Reference + global seeds are the source-of-truth for
+// phrase suggestions and quick picks. Keep fixed enums only for engineering/workflow states.
 
 const INTERP_VARIANCE_REASONS = [
   'groundwater_influence',
@@ -271,10 +244,14 @@ export const SiteLoggingElement: React.FC = () => {
   const [referenceAdminMode, setReferenceAdminMode] = useState(false);
   const [showReferenceNotes, setShowReferenceNotes] = useState(false);
   const [showVerificationAdvanced, setShowVerificationAdvanced] = useState(false);
+  const [pendingRefTemplate, setPendingRefTemplate] = useState<SiteLoggingReferenceTemplateV1 | null>(null);
+  const [pendingRefTemplateMode, setPendingRefTemplateMode] = useState<'replace' | 'merge' | 'phrases_only' | 'ground_only'>('merge');
+  const importRefTemplateInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [starterTemplateId, setStarterTemplateId] = useState<string>('');
+  const [showPendingRefTemplateDetails, setShowPendingRefTemplateDetails] = useState(false);
 
   const [designType, setDesignType] = useState('Default');
-  const [showDesignTypeOverride, setShowDesignTypeOverride] = useState(false);
-  const [referenceRlType, setReferenceRlType] = useState<'ground_rl' | 'nail_rl' | 'platform_rl' | 'toe_rl'>('ground_rl');
+  // Setup is field-first; no type override or reference-RL selector in normal UI.
   const [designInput, setDesignInput] = useState<any>({
     // Workflow flags (stored in design JSON; no schema changes)
     trial_hole: false,
@@ -291,7 +268,7 @@ export const SiteLoggingElement: React.FC = () => {
     required_socket_length_m: null,
 
     // Pile (field) requirements
-    governing_rock_condition: 'hw', // 'hw' | 'mw' | 'mixed'
+    governing_rock_condition: 'auto', // 'auto' | 'hw' | 'mw' | 'mixed'
     required_socket_hw_m: null,
     required_socket_mw_m: null,
     required_min_anchorage_below_ubolt_m: null,
@@ -319,7 +296,6 @@ export const SiteLoggingElement: React.FC = () => {
     notify_designer_required: false,
     test_note: '',
   });
-  const [showSuitabilitySetup, setShowSuitabilitySetup] = useState(false);
   const [showSetupAdvanced, setShowSetupAdvanced] = useState(false);
 
   // Raw inputs for pile essentials to allow typing decimals like "0.1" without being coerced to "0".
@@ -332,11 +308,18 @@ export const SiteLoggingElement: React.FC = () => {
   const [pileMinAnchBelowUboltRaw, setPileMinAnchBelowUboltRaw] = useState('');
   const [pileSocketHwRaw, setPileSocketHwRaw] = useState('');
   const [pileSocketMwRaw, setPileSocketMwRaw] = useState('');
+  const [pileMaxOverdrillRaw, setPileMaxOverdrillRaw] = useState('');
   const [pileFinalDepthRaw, setPileFinalDepthRaw] = useState('');
   // Legacy raw inputs (kept for existing records; advanced-only if shown)
-  const [pileMinSocketRaw, setPileMinSocketRaw] = useState('');
-  const [pileMinAnchHwRaw, setPileMinAnchHwRaw] = useState('');
-  const [pileMinAnchMwRaw, setPileMinAnchMwRaw] = useState('');
+  // Legacy numeric fields exist in stored design JSON for backwards compatibility, but are no longer edited in field UI.
+
+  // Raw inputs for Anchor/Soil Nail numeric fields (allow typing "0.2" without losing the dot mid-entry).
+  const [anchorAnchorageRaw, setAnchorAnchorageRaw] = useState('');
+  const [anchorSocketRaw, setAnchorSocketRaw] = useState('');
+  const [anchorWorkingLoadRaw, setAnchorWorkingLoadRaw] = useState('');
+  const [anchorMaxOverdrillRaw, setAnchorMaxOverdrillRaw] = useState('');
+  const [anchorBondedRaw, setAnchorBondedRaw] = useState('');
+  const [anchorDebondedRaw, setAnchorDebondedRaw] = useState('');
 
   const [records, setRecords] = useState<SiteDrillingRecord[]>([]);
   const [activeRecordId, setActiveRecordId] = useState<string>('');
@@ -444,6 +427,8 @@ export const SiteLoggingElement: React.FC = () => {
   const [groundRefRefVelocity, setGroundRefRefVelocity] = useState<string>('1600');
   const [groundRefRiskFlagsJson, setGroundRefRiskFlagsJson] = useState('[]');
   const [groundRefNotes, setGroundRefNotes] = useState('');
+  const [groundRefUnitDraft, setGroundRefUnitDraft] = useState('');
+  const [groundRefRiskDraft, setGroundRefRiskDraft] = useState('');
   const [boreholeCalibrations, setBoreholeCalibrations] = useState<SiteBoreholeCalibration[]>([]);
   const [newBhId, setNewBhId] = useState('');
   const [newBhTor, setNewBhTor] = useState('');
@@ -519,7 +504,7 @@ export const SiteLoggingElement: React.FC = () => {
     if (t === 'soil_nail') return 'SoilNail';
     return 'Anchor';
   }, [elementType]);
-  const effectiveDesignType = showDesignTypeOverride ? designType : elementDesignMode;
+  const effectiveDesignType = elementDesignMode;
   const visibleWorkflowSteps = ['Setup', 'Reference', 'Logging', 'Verification', 'Closeout'] as const;
 
   const phraseUsage = useMemo(() => {
@@ -817,8 +802,9 @@ export const SiteLoggingElement: React.FC = () => {
 
     if (category === 'drilling_response') {
       const norm = v.toLowerCase().replace(/\s+/g, ' ').trim();
-      const found = DRILLING_RESPONSES.find((r) => r.label.toLowerCase() === norm);
-      if (found) setNewResponses((prev) => (prev.includes(found.id) ? prev : [...prev, found.id]));
+      // Store drilling responses as human text (not enum ids). Existing records may contain
+      // underscore ids; we normalize those elsewhere for display/suggestions.
+      if (norm) setNewResponses((prev) => (prev.includes(v) ? prev : [...prev, v]));
     }
 
     if (category === 'observed_material') setNewMatObs(v);
@@ -856,10 +842,9 @@ export const SiteLoggingElement: React.FC = () => {
   useEffect(() => {
     // Keep design type aligned with element type for field workflow. Allow override for edge cases.
     if (!element) return;
-    if (showDesignTypeOverride) return;
     setDesignType(elementDesignMode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [element?.id, elementDesignMode, showDesignTypeOverride]);
+  }, [element?.id, elementDesignMode]);
 
   useEffect(() => {
     // Keep ToR variance classification in sync with the (optional) report/reference ToR and the current actual ToR.
@@ -894,6 +879,31 @@ export const SiteLoggingElement: React.FC = () => {
     () => computeTorCard({ reference_tor_depth_m: null, actual_tor_depth_m: null } as any, intervals).actualTorDepthM,
     [intervals]
   );
+
+  const pileRockEvidence = useMemo(() => {
+    if (!intervals.length) return { hasHW: false, hasMW: false, note: 'No intervals logged yet.' };
+    let hasHW = false;
+    let hasMW = false;
+    for (const it of intervals) {
+      const w = String(it.weathering_class || '').toLowerCase();
+      const mat = String(it.material_interpreted || '').toLowerCase();
+      if (w === 'hw' || mat.includes(' hw')) hasHW = true;
+      if (w === 'mw' || mat.includes(' mw')) hasMW = true;
+    }
+    const note =
+      hasHW && hasMW ? 'HW and MW both logged.' :
+      hasHW ? 'HW rock logged.' :
+      hasMW ? 'MW rock logged.' :
+      'No HW/MW rock logged.';
+    return { hasHW, hasMW, note };
+  }, [intervals]);
+
+  const pileSuggestedGoverningCondition = useMemo(() => {
+    if (pileRockEvidence.hasHW && pileRockEvidence.hasMW) return { value: 'mixed', reason: 'HW and MW both logged.' };
+    if (pileRockEvidence.hasHW) return { value: 'hw', reason: 'Only HW logged.' };
+    if (pileRockEvidence.hasMW) return { value: 'mw', reason: 'Only MW logged.' };
+    return { value: '', reason: 'No HW/MW evidence in logging.' };
+  }, [pileRockEvidence]);
 
   const seededGroundReference = useMemo(() => {
     if (!site) return null as any;
@@ -964,6 +974,266 @@ export const SiteLoggingElement: React.FC = () => {
     } catch (e) {
       alert(`Failed to apply seed: ${e instanceof Error ? e.message : String(e)}`);
     }
+  };
+
+  const exportReferenceTemplate = () => {
+    if (!element || !site) return;
+    const templateName = window.prompt('Template name (e.g. "Cairns pile logging reference")', `${site.site_code || 'Site'} reference template`);
+    if (!templateName) return;
+
+    try {
+      const groundRef: any = siteGroundReferenceRepo.getGroundReferenceBySite(site.id);
+      const sitePhrases = siteLoggingPhraseRepo.listForLibrary({ siteId: site.id, scope: 'site' });
+      const otherRefs = siteGroundReferenceRepo
+        .listBySite(site.id)
+        .filter((r: any) => String(r.reference_type || '') !== 'GroundReference')
+        .map((r: any) => ({ reference_type: String(r.reference_type), source_label: r.source_label ?? null, reference_json: String(r.reference_json || '{}') }));
+
+      const tpl = buildSiteLoggingReferenceTemplate({
+        templateName: templateName.trim(),
+        applicability: { project: String(site.project_id || ''), site_code: String(site.site_code || '') },
+        groundRef,
+        referenceObj: groundRefReferenceObj,
+        sitePhrases,
+        phraseAdminPolicy,
+        boreholeCalibrations,
+        otherReferences: otherRefs,
+      });
+
+      const blob = new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeName = templateName.trim().replace(/[^\w\-]+/g, '_').replace(/_+/g, '_');
+      a.download = `site-reference-template-${safeName || 'template'}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      alert(`Failed to export template: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const startImportReferenceTemplate = () => {
+    importRefTemplateInputRef.current?.click();
+  };
+
+  const onImportReferenceTemplateFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const validated = validateSiteLoggingReferenceTemplate(text);
+      if (validated.ok === false) {
+        alert(`Invalid template: ${validated.error}`);
+        return;
+      }
+      setPendingRefTemplate(validated.value);
+      setPendingRefTemplateMode('merge');
+      setShowPendingRefTemplateDetails(false);
+    } catch (e) {
+      alert(`Failed to read template: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (importRefTemplateInputRef.current) importRefTemplateInputRef.current.value = '';
+    }
+  };
+
+  const applyPendingReferenceTemplate = async () => {
+    if (!pendingRefTemplate || !element || !site) return;
+    const tpl = pendingRefTemplate;
+
+    const confirmMsg =
+      `Apply reference template "${tpl.template_name}"?\n\n` +
+      `Mode: ${pendingRefTemplateMode}\n` +
+      `Phrases: ${tpl.phrase_library.phrases.length}\n` +
+      `Calibrations: ${tpl.evidence.borehole_calibrations.length}\n` +
+      `Evidence refs: ${tpl.evidence.references.length}\n\n` +
+      `This does not import drilling records, photos, or verification results.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const currentGroundRef: any = siteGroundReferenceRepo.getGroundReferenceBySite(site.id);
+      const currentPhrases = siteLoggingPhraseRepo.listForLibrary({ siteId: site.id, scope: 'site' });
+      const currentOtherRefs = siteGroundReferenceRepo
+        .listBySite(site.id)
+        .filter((r: any) => String(r.reference_type || '') !== 'GroundReference');
+      const currentCal = siteBoreholeCalibrationRepo.listBySite(site.id);
+
+      const templatePhrasePairs = tpl.phrase_library.phrases
+        .filter((p) => p.scope === 'site')
+        .map((p) => ({ category: p.category, text: p.text }));
+
+      const nextPhrases =
+        pendingRefTemplateMode === 'replace'
+          ? templatePhrasePairs
+          : pendingRefTemplateMode === 'phrases_only' || pendingRefTemplateMode === 'merge'
+            ? mergeUniquePhrases({
+                existing: currentPhrases.map((p) => ({ category: p.category, text: p.text })),
+                incoming: templatePhrasePairs,
+              })
+            : currentPhrases.map((p) => ({ category: p.category, text: p.text }));
+
+      if (pendingRefTemplateMode === 'replace') {
+        // Remove existing site-specific phrases first (global phrases come from seeds)
+        for (const p of currentPhrases) {
+          await siteLoggingPhraseRepo.remove(p.id);
+        }
+      }
+
+      if (pendingRefTemplateMode !== 'ground_only') {
+        await siteLoggingPhraseRepo.upsertManyUnique(nextPhrases.map((p) => ({ ...p, site_id: site.id })));
+      }
+
+      // Re-load phrases to build id mapping for phrase_admin
+      const refreshedPhrases = siteLoggingPhraseRepo.listForLibrary({ siteId: site.id, scope: 'site' });
+      const phraseKeyToId = new Map<string, string>();
+      for (const p of refreshedPhrases) {
+        const key = `${normalizePhraseCategory(String(p.category)).normalized}::${normalizePhraseTextKey(p.text)}`;
+        phraseKeyToId.set(key, p.id);
+      }
+
+      const buildPhraseAdminFromTemplate = () => {
+        const pa = tpl.phrase_library.phrase_admin;
+        if (!pa) return null;
+        const archivedIds: string[] = [];
+        for (const a of pa.archived || []) {
+          const key = `${normalizePhraseCategory(String(a.category)).normalized}::${normalizePhraseTextKey(a.text)}`;
+          const id = phraseKeyToId.get(key);
+          if (id) archivedIds.push(id);
+        }
+        const orderByCategory: Record<string, string[]> = {};
+        for (const [cat, entries] of Object.entries(pa.order_by_category || {} as any)) {
+          const ids: string[] = [];
+          const list = Array.isArray(entries) ? entries : [];
+          for (const e of list) {
+            const key = `${normalizePhraseCategory(String(e.category)).normalized}::${normalizePhraseTextKey(e.text)}`;
+            const id = phraseKeyToId.get(key);
+            if (id) ids.push(id);
+          }
+          orderByCategory[String(cat)] = ids;
+        }
+        return { archivedIds: [...new Set(archivedIds)], orderByCategory };
+      };
+
+      const nextPhraseAdmin = buildPhraseAdminFromTemplate();
+
+      // Ground model apply/merge
+      if (pendingRefTemplateMode !== 'phrases_only') {
+        const gm = tpl.ground_model;
+        const existingUnits = currentGroundRef?.geotechnical_units_json ? parseJsonArray(String(currentGroundRef.geotechnical_units_json)) : [];
+        const existingRisks = currentGroundRef?.site_risk_flags_json ? parseJsonArray(String(currentGroundRef.site_risk_flags_json)) : [];
+        const existingAbove = currentGroundRef?.expected_material_above_tor_json ? parseJsonArray(String(currentGroundRef.expected_material_above_tor_json)) : [];
+        const existingBelow = currentGroundRef?.expected_material_below_tor_json ? parseJsonArray(String(currentGroundRef.expected_material_below_tor_json)) : [];
+
+        const union = (a: any[], b: any[]) => [...new Set([...a.map(String), ...b.map(String)].map((s) => s.trim()).filter(Boolean))];
+        const nextUnits = pendingRefTemplateMode === 'merge' ? union(existingUnits, gm.geotechnical_units) : gm.geotechnical_units;
+        const nextRisks = pendingRefTemplateMode === 'merge' ? union(existingRisks, gm.risk_flags) : gm.risk_flags;
+        const nextAbove = pendingRefTemplateMode === 'merge' ? union(existingAbove, gm.expected_material_above_tor) : gm.expected_material_above_tor;
+        const nextBelow = pendingRefTemplateMode === 'merge' ? union(existingBelow, gm.expected_material_below_tor) : gm.expected_material_below_tor;
+        const nextNotes =
+          pendingRefTemplateMode === 'merge'
+            ? [String(currentGroundRef?.reference_notes || '').trim(), String(gm.site_notes || '').trim()].filter(Boolean).join('\n\n')
+            : String(gm.site_notes || '');
+
+        const nextRefObj =
+          pendingRefTemplateMode === 'merge'
+            ? { ...(groundRefReferenceObj || {}), ...(gm.reference_json || {}) }
+            : (gm.reference_json || {});
+
+        if (nextPhraseAdmin) {
+          nextRefObj.phrase_admin = {
+            archived_ids: nextPhraseAdmin.archivedIds,
+            order_by_category: nextPhraseAdmin.orderByCategory,
+          };
+        }
+
+        await siteGroundReferenceRepo.upsertGroundReferenceBySite(element.project_id, site.id, {
+          source_label: gm.source_label ?? 'Project maintained reference (template)',
+          geotechnical_units_json: JSON.stringify(nextUnits),
+          expected_tor_min_m: gm.expected_tor_min_m ?? null,
+          expected_tor_max_m: gm.expected_tor_max_m ?? null,
+          reference_tor_velocity_ms: gm.reference_tor_velocity_ms ?? null,
+          expected_material_above_tor_json: JSON.stringify(nextAbove),
+          expected_material_below_tor_json: JSON.stringify(nextBelow),
+          site_risk_flags_json: JSON.stringify(nextRisks),
+          reference_notes: nextNotes,
+          reference_json: JSON.stringify(nextRefObj),
+        });
+      }
+
+      // Evidence/calibration apply
+      if (pendingRefTemplateMode === 'replace') {
+        // Calibrations replace
+        await siteBoreholeCalibrationRepo.upsertManyForSite(site.id, tpl.evidence.borehole_calibrations as any);
+        // Other refs replace (delete existing non-ground and recreate)
+        for (const r of currentOtherRefs) await siteGroundReferenceRepo.delete(r.id);
+        for (const r of tpl.evidence.references) {
+          await siteGroundReferenceRepo.create({
+            project_id: element.project_id,
+            site_id: site.id,
+            reference_type: r.reference_type,
+            source_label: r.source_label ?? null,
+            reference_json: r.reference_json,
+            created_at: '',
+            updated_at: '',
+          } as any);
+        }
+      } else if (pendingRefTemplateMode === 'merge' || pendingRefTemplateMode === 'ground_only') {
+        // Calibrations merge by borehole_id
+        const byBh = new Map<string, any>();
+        for (const c of currentCal) byBh.set(String(c.borehole_id), { ...c });
+        for (const c of tpl.evidence.borehole_calibrations as any[]) byBh.set(String(c.borehole_id), { ...c });
+        const merged = [...byBh.values()].map((c) => ({
+          site_line_id: c.site_line_id ?? null,
+          borehole_id: c.borehole_id,
+          borehole_offset_m: c.borehole_offset_m ?? null,
+          elevation_difference_m: c.elevation_difference_m ?? null,
+          borehole_tor_depth_m_bgl: c.borehole_tor_depth_m_bgl ?? null,
+          borehole_lithology_at_tor: c.borehole_lithology_at_tor ?? null,
+          srt_velocity_at_tor_ms: c.srt_velocity_at_tor_ms ?? null,
+          difference_geophysics_minus_borehole_m: c.difference_geophysics_minus_borehole_m ?? null,
+          variance_note: c.variance_note ?? null,
+          confidence: c.confidence ?? null,
+        }));
+        await siteBoreholeCalibrationRepo.upsertManyForSite(site.id, merged as any);
+
+        // Other refs merge (add any that do not exist verbatim)
+        const existingKeys = new Set(
+          currentOtherRefs.map((r: any) => `${r.reference_type}::${String(r.source_label || '')}::${String(r.reference_json || '')}`)
+        );
+        for (const r of tpl.evidence.references) {
+          const key = `${r.reference_type}::${String(r.source_label || '')}::${String(r.reference_json || '')}`;
+          if (existingKeys.has(key)) continue;
+          await siteGroundReferenceRepo.create({
+            project_id: element.project_id,
+            site_id: site.id,
+            reference_type: r.reference_type,
+            source_label: r.source_label ?? null,
+            reference_json: r.reference_json,
+            created_at: '',
+            updated_at: '',
+          } as any);
+        }
+      }
+
+      await reload();
+      setPendingRefTemplate(null);
+      setShowPendingRefTemplateDetails(false);
+      alert('Reference template applied.');
+    } catch (e) {
+      console.warn('[SiteLoggingElement] Apply reference template failed:', e);
+      alert(`Failed to apply template: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const loadStarterReferenceTemplate = () => {
+    const id = String(starterTemplateId || '').trim();
+    if (!id) return;
+    const found = SITE_LOGGING_STARTER_TEMPLATES.find((t) => t.id === id);
+    if (!found) return alert('Starter template not found.');
+    setPendingRefTemplate(found.template);
+    setPendingRefTemplateMode('merge');
+    setShowPendingRefTemplateDetails(false);
   };
 
   const recommendedNextActions = useMemo((): string[] => {
@@ -1172,16 +1442,11 @@ export const SiteLoggingElement: React.FC = () => {
       setPileSocketHwRaw(currentDesignInput.required_socket_hw_m != null ? String(currentDesignInput.required_socket_hw_m) : '');
       setPileSocketMwRaw(currentDesignInput.required_socket_mw_m != null ? String(currentDesignInput.required_socket_mw_m) : '');
       setPileFinalDepthRaw(currentDesignInput.final_drilled_depth_m != null ? String(currentDesignInput.final_drilled_depth_m) : '');
-      setPileMinSocketRaw(currentDesignInput.required_socket_length_m != null ? String(currentDesignInput.required_socket_length_m) : '');
-      setPileMinAnchHwRaw(currentDesignInput.min_anchorage_hw_m != null ? String(currentDesignInput.min_anchorage_hw_m) : '');
-      setPileMinAnchMwRaw(currentDesignInput.min_anchorage_mw_m != null ? String(currentDesignInput.min_anchorage_mw_m) : '');
       setPileGroundRlRaw(el.ground_rl != null ? String(el.ground_rl) : '');
       setPileHoleDiaRaw(el.hole_diameter_mm != null ? String(el.hole_diameter_mm) : '');
     } catch {
       // ignore
     }
-    setReferenceRlType(((ds as any)?.reference_rl_type as any) || 'ground_rl');
-
     const rs = siteDrillingRepo.listRecordsByElement(el.id);
     setRecords(rs);
     const nextRecordId = activeRecordId || rs[0]?.id || '';
@@ -1329,7 +1594,6 @@ export const SiteLoggingElement: React.FC = () => {
     } catch {
       setDesignInput({ ...designInput });
     }
-    setReferenceRlType((ds?.reference_rl_type as any) || 'ground_rl');
   }, [designType, element]);
 
   useEffect(() => {
@@ -1359,6 +1623,41 @@ export const SiteLoggingElement: React.FC = () => {
     setRecordGeneralNote((record as any).general_note ?? '');
   }, [record?.id]);
 
+  // Sync raw numeric input buffers from persisted design input (so reload/import keeps fields consistent).
+  useEffect(() => {
+    if (effectiveDesignType === 'MicroPile') {
+      setPileMaxOverdrillRaw(designInput?.max_overdrill_m != null ? String(designInput.max_overdrill_m) : '');
+      return;
+    }
+    setPileMaxOverdrillRaw('');
+  }, [effectiveDesignType, designInput?.max_overdrill_m]);
+
+  useEffect(() => {
+    if (effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail') {
+      setAnchorAnchorageRaw(designInput?.design_anchorage_length_m != null ? String(designInput.design_anchorage_length_m) : '');
+      setAnchorSocketRaw(designInput?.required_socket_length_m != null ? String(designInput.required_socket_length_m) : '');
+      setAnchorWorkingLoadRaw(designInput?.working_load_kN != null ? String(designInput.working_load_kN) : '');
+      setAnchorMaxOverdrillRaw(designInput?.max_overdrill_m != null ? String(designInput.max_overdrill_m) : '');
+      setAnchorBondedRaw(designInput?.design_bonded_length_m != null ? String(designInput.design_bonded_length_m) : '');
+      setAnchorDebondedRaw(designInput?.design_debonded_length_m != null ? String(designInput.design_debonded_length_m) : '');
+      return;
+    }
+    setAnchorAnchorageRaw('');
+    setAnchorSocketRaw('');
+    setAnchorWorkingLoadRaw('');
+    setAnchorMaxOverdrillRaw('');
+    setAnchorBondedRaw('');
+    setAnchorDebondedRaw('');
+  }, [
+    effectiveDesignType,
+    designInput?.design_anchorage_length_m,
+    designInput?.required_socket_length_m,
+    designInput?.working_load_kN,
+    designInput?.max_overdrill_m,
+    designInput?.design_bonded_length_m,
+    designInput?.design_debonded_length_m,
+  ]);
+
   const saveElementPatch = async (patch: Partial<Omit<SupportElement, 'id' | 'project_id' | 'site_id'>>) => {
     if (!element) return;
     await supportElementRepo.update(element.id, patch);
@@ -1373,13 +1672,20 @@ export const SiteLoggingElement: React.FC = () => {
       effectiveDesignType === 'MicroPile'
         ? {
             ...designInput,
-            casing_to_depth_m: parseNumberOrNull(pileBaseCasingRaw),
             required_plunge_length_m: parseNumberOrNull(pileMinPlungeRaw),
-            required_socket_length_m: parseNumberOrNull(pileMinSocketRaw),
-            min_anchorage_hw_m: parseNumberOrNull(pileMinAnchHwRaw),
-            min_anchorage_mw_m: parseNumberOrNull(pileMinAnchMwRaw),
+            max_overdrill_m: parseNumberOrNull(pileMaxOverdrillRaw),
           }
-        : designInput;
+        : effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail'
+          ? {
+              ...designInput,
+              design_anchorage_length_m: parseNumberOrNull(anchorAnchorageRaw),
+              required_socket_length_m: parseNumberOrNull(anchorSocketRaw),
+              working_load_kN: parseNumberOrNull(anchorWorkingLoadRaw),
+              max_overdrill_m: parseNumberOrNull(anchorMaxOverdrillRaw),
+              design_bonded_length_m: parseNumberOrNull(anchorBondedRaw),
+              design_debonded_length_m: parseNumberOrNull(anchorDebondedRaw),
+            }
+          : designInput;
 
     setDesignInput(committedDesignInput);
 
@@ -1397,7 +1703,7 @@ export const SiteLoggingElement: React.FC = () => {
 
     await siteDesignInputRepo.upsert(element.id, designType, JSON.stringify(committedDesignInput), {
       element_type: String(element.element_type || '').toLowerCase(),
-      reference_rl_type: referenceRlType,
+      reference_rl_type: 'ground_rl',
       design_json: JSON.stringify(committedDesignInput),
     });
     reload();
@@ -1622,7 +1928,9 @@ export const SiteLoggingElement: React.FC = () => {
     setEditRockType(((it as any).rock_type as any) ?? 'not_applicable');
     setEditRecoveryType(((it as any).recovery_type as any) ?? 'good_return');
     setEditWater(((it as any).water_condition as any) ?? 'not_observed');
-    const resp = (it as any).drilling_response_json ? parseJsonArray((it as any).drilling_response_json).map(String) : [];
+    const resp = (it as any).drilling_response_json
+      ? parseJsonArray((it as any).drilling_response_json).map(String).map((s) => s.replace(/_/g, ' '))
+      : [];
     setEditResponses(resp);
     setEditFreeNote((it as any).free_text_note ?? '');
     setEditFinalPhrase(((it as any).logging_phrase_output as any) || '');
@@ -1928,9 +2236,50 @@ export const SiteLoggingElement: React.FC = () => {
 
   const runVerification = async () => {
     if (!element) return;
+
+    // Verification can capture as-built depths (base of casing / U-bolt / final depth).
+    // Persist these alongside design inputs so field users don't need to bounce back to Setup to save.
+    const committedForVerification =
+      effectiveDesignType === 'MicroPile'
+        ? {
+            ...designInput,
+            casing_to_depth_m: parseNumberOrNull(pileBaseCasingRaw),
+            lowest_ubolt_depth_m: parseNumberOrNull(pileLowestUboltRaw),
+            final_drilled_depth_m: parseNumberOrNull(pileFinalDepthRaw),
+            required_plunge_length_m: parseNumberOrNull(pileMinPlungeRaw),
+            max_overdrill_m: parseNumberOrNull(pileMaxOverdrillRaw),
+            u_bolt_zone_length_m: parseNumberOrNull(pileUboltZoneRaw),
+            required_min_anchorage_below_ubolt_m: parseNumberOrNull(pileMinAnchBelowUboltRaw),
+            required_socket_hw_m: parseNumberOrNull(pileSocketHwRaw),
+            required_socket_mw_m: parseNumberOrNull(pileSocketMwRaw),
+          }
+        : effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail'
+          ? {
+              ...designInput,
+              design_anchorage_length_m: parseNumberOrNull(anchorAnchorageRaw),
+              required_socket_length_m: parseNumberOrNull(anchorSocketRaw),
+              working_load_kN: parseNumberOrNull(anchorWorkingLoadRaw),
+              max_overdrill_m: parseNumberOrNull(anchorMaxOverdrillRaw),
+              design_bonded_length_m: parseNumberOrNull(anchorBondedRaw),
+              design_debonded_length_m: parseNumberOrNull(anchorDebondedRaw),
+            }
+          : designInput;
+
+    setDesignInput(committedForVerification);
+    try {
+      await siteDesignInputRepo.upsert(element.id, designType, JSON.stringify(committedForVerification), {
+        element_type: String(element.element_type || '').toLowerCase(),
+        reference_rl_type: 'ground_rl',
+        design_json: JSON.stringify(committedForVerification),
+      });
+    } catch (e) {
+      console.warn('[SiteLoggingElement] Design input persistence during verification failed:', e);
+      // Continue; verification can still run in-memory.
+    }
+
     const summary = evaluateSiteVerification({
       element,
-      designInput,
+      designInput: committedForVerification,
       record,
       intervals,
       interpretation: {
@@ -1955,7 +2304,7 @@ export const SiteLoggingElement: React.FC = () => {
     const nextText = buildSiteOutputReport({
       element,
       siteCode: site?.site_code || '',
-      designInput,
+      designInput: committedForVerification,
       interpretation: {
         reference_tor_depth_m: toNumberOrNull(interpReferenceTorDepth),
         actual_tor_depth_m: toNumberOrNull(interpActualTorDepth),
@@ -2485,29 +2834,53 @@ export const SiteLoggingElement: React.FC = () => {
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Anchorage length (m)"
                       inputMode="decimal"
-                      value={designInput.design_anchorage_length_m ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, design_anchorage_length_m: toNumberOrNull(e.target.value) })}
+                      value={anchorAnchorageRaw}
+                      onChange={(e) => setAnchorAnchorageRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          design_anchorage_length_m: parseNumberOrNull(anchorAnchorageRaw),
+                        })
+                      }
                     />
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Socket / bond length (m)"
                       inputMode="decimal"
-                      value={designInput.required_socket_length_m ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, required_socket_length_m: toNumberOrNull(e.target.value) })}
+                      value={anchorSocketRaw}
+                      onChange={(e) => setAnchorSocketRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          required_socket_length_m: parseNumberOrNull(anchorSocketRaw),
+                        })
+                      }
                     />
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Working load (kN)"
                       inputMode="decimal"
-                      value={designInput.working_load_kN ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, working_load_kN: toNumberOrNull(e.target.value) })}
+                      value={anchorWorkingLoadRaw}
+                      onChange={(e) => setAnchorWorkingLoadRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          working_load_kN: parseNumberOrNull(anchorWorkingLoadRaw),
+                        })
+                      }
                     />
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Max overdrill (m)"
                       inputMode="decimal"
-                      value={designInput.max_overdrill_m ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })}
+                      value={anchorMaxOverdrillRaw}
+                      onChange={(e) => setAnchorMaxOverdrillRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          max_overdrill_m: parseNumberOrNull(anchorMaxOverdrillRaw),
+                        })
+                      }
                     />
                   </div>
                 </div>
@@ -2546,14 +2919,6 @@ export const SiteLoggingElement: React.FC = () => {
                       onChange={(e) => setDesignInput({ ...designInput, casing_type: e.target.value })}
                     />
                     <input
-                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Base of casing depth (m)"
-                      inputMode="decimal"
-                      value={pileBaseCasingRaw}
-                      onChange={(e) => setPileBaseCasingRaw(e.target.value)}
-                      onBlur={() => setDesignInput({ ...designInput, casing_to_depth_m: parseNumberOrNull(pileBaseCasingRaw) })}
-                    />
-                    <input
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Min casing plunge into rock (m)"
                       inputMode="decimal"
@@ -2570,31 +2935,6 @@ export const SiteLoggingElement: React.FC = () => {
                       onBlur={() => setDesignInput({ ...designInput, u_bolt_zone_length_m: parseNumberOrNull(pileUboltZoneRaw) })}
                     />
                     <input
-                      className="rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Lowest U-bolt depth (m, optional)"
-                      inputMode="decimal"
-                      value={pileLowestUboltRaw}
-                      onChange={(e) => setPileLowestUboltRaw(e.target.value)}
-                      onBlur={() => setDesignInput({ ...designInput, lowest_ubolt_depth_m: parseNumberOrNull(pileLowestUboltRaw) })}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const base = parseNumberOrNull(pileBaseCasingRaw);
-                        const zone = parseNumberOrNull(pileUboltZoneRaw);
-                        if (base == null || zone == null) {
-                          alert('Enter base of casing depth and U-bolt zone allowance first.');
-                          return;
-                        }
-                        const computed = base + zone;
-                        setPileLowestUboltRaw(computed.toFixed(2));
-                        setDesignInput({ ...designInput, lowest_ubolt_depth_m: computed });
-                      }}
-                      className="col-span-2 rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
-                    >
-                      Calculate lowest U-bolt = base of casing + allowance
-                    </button>
-                    <input
                       className="col-span-2 rounded-lg border px-3 py-2 text-sm"
                       placeholder="Required anchorage below lowest U-bolt (m)"
                       inputMode="decimal"
@@ -2602,15 +2942,6 @@ export const SiteLoggingElement: React.FC = () => {
                       onChange={(e) => setPileMinAnchBelowUboltRaw(e.target.value)}
                       onBlur={() => setDesignInput({ ...designInput, required_min_anchorage_below_ubolt_m: parseNumberOrNull(pileMinAnchBelowUboltRaw) })}
                     />
-                    <select
-                      value={String(designInput.governing_rock_condition || 'hw')}
-                      onChange={(e) => setDesignInput({ ...designInput, governing_rock_condition: e.target.value })}
-                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
-                    >
-                      <option value="hw">Governing rock condition: HW</option>
-                      <option value="mw">Governing rock condition: MW</option>
-                      <option value="mixed">Governing rock condition: mixed (engineer review)</option>
-                    </select>
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Required HW socket (m)"
@@ -2629,30 +2960,39 @@ export const SiteLoggingElement: React.FC = () => {
                     />
                     <input
                       className="col-span-2 rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Bar / pile ID (optional)"
+                      placeholder="Pile / post ID"
                       value={designInput.bar_id ?? ''}
                       onChange={(e) => setDesignInput({ ...designInput, bar_id: e.target.value })}
                     />
                     <input
                       className="col-span-2 rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Anchor / bar size (optional)"
+                      placeholder="Bar / pile size (optional)"
                       value={designInput.anchor_bar_size ?? ''}
                       onChange={(e) => setDesignInput({ ...designInput, anchor_bar_size: e.target.value })}
                     />
-                    <input
-                      className="rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Final drilled depth (m, optional manual)"
-                      inputMode="decimal"
-                      value={pileFinalDepthRaw}
-                      onChange={(e) => setPileFinalDepthRaw(e.target.value)}
-                      onBlur={() => setDesignInput({ ...designInput, final_drilled_depth_m: parseNumberOrNull(pileFinalDepthRaw) })}
-                    />
+                    <select
+                      className="col-span-2 rounded-lg border px-3 py-2 text-sm"
+                      value={String(designInput.governing_rock_condition || 'auto')}
+                      onChange={(e) => setDesignInput({ ...designInput, governing_rock_condition: e.target.value })}
+                      title="Design basis for socket requirement. Auto will follow logging evidence but may still require review."
+                    >
+                      <option value="auto">Governing rock condition: Auto (from logging)</option>
+                      <option value="hw">Governing rock condition: HW</option>
+                      <option value="mw">Governing rock condition: MW</option>
+                      <option value="mixed">Governing rock condition: mixed / review</option>
+                    </select>
                     <input
                       className="rounded-lg border px-3 py-2 text-sm"
                       placeholder="Max overdrill (m)"
                       inputMode="decimal"
-                      value={designInput.max_overdrill_m ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, max_overdrill_m: toNumberOrNull(e.target.value) })}
+                      value={pileMaxOverdrillRaw}
+                      onChange={(e) => setPileMaxOverdrillRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          max_overdrill_m: parseNumberOrNull(pileMaxOverdrillRaw),
+                        })
+                      }
                     />
                     <textarea
                       className="col-span-2 min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
@@ -2663,150 +3003,9 @@ export const SiteLoggingElement: React.FC = () => {
                   </div>
                 </div>
               )}
-              {showSetupAdvanced && effectiveDesignType === 'MicroPile' && (
-                <div className="rounded-lg border bg-zinc-50 p-3">
-                  <div className="text-[11px] font-bold uppercase text-zinc-600">Pile advanced</div>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <input
-                      className="rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Foundation / post ID (optional)"
-                      value={designInput.foundation_id ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, foundation_id: e.target.value })}
-                    />
-                    <select
-                      value={designInput.socket_basis ?? 'gross_socket'}
-                      onChange={(e) => setDesignInput({ ...designInput, socket_basis: e.target.value })}
-                      className="rounded-lg border px-3 py-2 text-sm"
-                    >
-                      <option value="gross_socket">Socket basis: gross socket</option>
-                      <option value="net_competent_socket">Socket basis: net competent socket</option>
-                    </select>
-                    <input
-                      className="rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Min rock anchorage (HW) (m)"
-                      inputMode="decimal"
-                      value={pileMinAnchHwRaw}
-                      onChange={(e) => setPileMinAnchHwRaw(e.target.value)}
-                      onBlur={() => setDesignInput({ ...designInput, min_anchorage_hw_m: parseNumberOrNull(pileMinAnchHwRaw) })}
-                    />
-                    <input
-                      className="rounded-lg border px-3 py-2 text-sm"
-                      placeholder="Min rock anchorage (MW) (m)"
-                      inputMode="decimal"
-                      value={pileMinAnchMwRaw}
-                      onChange={(e) => setPileMinAnchMwRaw(e.target.value)}
-                      onBlur={() => setDesignInput({ ...designInput, min_anchorage_mw_m: parseNumberOrNull(pileMinAnchMwRaw) })}
-                    />
-                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                      <input type="checkbox" checked={Boolean(designInput.weak_band_deduction_required)} onChange={(e) => setDesignInput({ ...designInput, weak_band_deduction_required: e.target.checked })} />
-                      Weak band deduction required
-                    </label>
-                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                      <input type="checkbox" checked={Boolean(designInput.clean_out_required)} onChange={(e) => setDesignInput({ ...designInput, clean_out_required: e.target.checked })} />
-                      Clean-out required
-                    </label>
-                    <label className="col-span-2 flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                      <input type="checkbox" checked={Boolean(designInput.grout_approval_required)} onChange={(e) => setDesignInput({ ...designInput, grout_approval_required: e.target.checked })} />
-                      Grout approval required
-                    </label>
-                  </div>
-                </div>
-              )}
-              {showSetupAdvanced && (
-                <div className="rounded-lg border bg-zinc-50 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-bold uppercase text-zinc-600">Project / admin controls</div>
-                    <button
-                      onClick={() => setShowDesignTypeOverride((v) => !v)}
-                      className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-100"
-                      title="Allow overriding design mode for edge cases"
-                    >
-                      {showDesignTypeOverride ? 'Lock type' : 'Type override'}
-                    </button>
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <select
-                      value={coerceElementTypeToFieldType(String(element.element_type || ''))}
-                      onChange={(e) => saveElementPatch({ element_type: e.target.value })}
-                      className="rounded-lg border px-3 py-2 text-sm"
-                    >
-                      <option value="anchor">Anchor</option>
-                      <option value="soil_nail">Soil nail</option>
-                      <option value="micro_pile">Pile</option>
-                    </select>
-                    <select
-                      value={coerceStatusToFieldStatus(String(element.status || ''))}
-                      onChange={(e) => saveElementPatch({ status: e.target.value })}
-                      className="rounded-lg border px-3 py-2 text-sm"
-                    >
-                      <option value="draft">Draft</option>
-                      <option value="in_progress">In progress</option>
-                      <option value="review">Review</option>
-                      <option value="finalised">Finalised</option>
-                    </select>
-                    {showDesignTypeOverride && (
-                      <select value={designType} onChange={(e) => setDesignType(e.target.value)} className="rounded-lg border px-3 py-2 text-sm">
-                        <option value="Default">Default</option>
-                        <option value="Anchor">Anchor</option>
-                        <option value="SoilNail">Soil nail</option>
-                        <option value="MicroPile">Pile</option>
-                      </select>
-                    )}
-                    <select value={referenceRlType} onChange={(e) => setReferenceRlType(e.target.value as any)} className="rounded-lg border px-3 py-2 text-sm">
-                      <option value="ground_rl">Reference RL: ground RL</option>
-                      <option value="nail_rl">Reference RL: nail RL</option>
-                      <option value="platform_rl">Reference RL: platform RL</option>
-                      <option value="toe_rl">Reference RL: toe RL</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-
-              {showSetupAdvanced && (
-              <div className="rounded-lg border bg-zinc-50 p-3">
-                <div className="text-[11px] font-bold uppercase text-zinc-600">Workflow options</div>
-                <div className="mt-2 grid grid-cols-1 gap-2">
-                  <label className="flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(designInput.trial_hole)}
-                      onChange={(e) => setDesignInput({ ...designInput, trial_hole: e.target.checked })}
-                    />
-                    Trial hole (flag only)
-                  </label>
-                  {Boolean(designInput.trial_hole) && (
-                    <textarea
-                      className="min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
-                      placeholder="Trial hole note (purpose / constraints / location)"
-                      value={designInput.trial_hole_note ?? ''}
-                      onChange={(e) => setDesignInput({ ...designInput, trial_hole_note: e.target.value })}
-                    />
-                  )}
-
-                  <label className="flex items-center gap-2 rounded-lg border bg-white p-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(designInput.suitability_test_required)}
-                      onChange={(e) => {
-                        setDesignInput({ ...designInput, suitability_test_required: e.target.checked });
-                        // Requirement: keep collapsed by default even when enabled.
-                        if (!e.target.checked) setShowSuitabilitySetup(false);
-                      }}
-                    />
-                    Suitability test required
-                  </label>
-
-                  {Boolean(designInput.suitability_test_required) && (
-                    <button
-                      onClick={() => setShowSuitabilitySetup((v) => !v)}
-                      className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-50"
-                    >
-                      {showSuitabilitySetup ? 'Hide suitability' : 'Show suitability'}
-                    </button>
-                  )}
-                </div>
-              </div>
-              )}
+              {/* Pile advanced fields intentionally removed from field Setup. */}
+              {/* Intentionally no element-type override, status override, reference-RL selector, or workflow flags here.
+                  Setup is design requirements only for field use. Admin/debug controls remain internal-only. */}
 
               {showSetupAdvanced && (effectiveDesignType === 'Anchor' || effectiveDesignType === 'SoilNail') && (
                 <div className="rounded-lg border bg-zinc-50 p-3">
@@ -2814,10 +3013,32 @@ export const SiteLoggingElement: React.FC = () => {
                     {effectiveDesignType === 'SoilNail' ? 'Soil nail design' : 'Anchor design'}
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Bonded length (m)" inputMode="decimal"
-                      value={designInput.design_bonded_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, design_bonded_length_m: toNumberOrNull(e.target.value) })} />
-                    <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Debonded length (m)" inputMode="decimal"
-                      value={designInput.design_debonded_length_m ?? ''} onChange={(e) => setDesignInput({ ...designInput, design_debonded_length_m: toNumberOrNull(e.target.value) })} />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Bonded length (m)"
+                      inputMode="decimal"
+                      value={anchorBondedRaw}
+                      onChange={(e) => setAnchorBondedRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          design_bonded_length_m: parseNumberOrNull(anchorBondedRaw),
+                        })
+                      }
+                    />
+                    <input
+                      className="rounded-lg border px-3 py-2 text-sm"
+                      placeholder="Debonded length (m)"
+                      inputMode="decimal"
+                      value={anchorDebondedRaw}
+                      onChange={(e) => setAnchorDebondedRaw(e.target.value)}
+                      onBlur={() =>
+                        setDesignInput({
+                          ...designInput,
+                          design_debonded_length_m: parseNumberOrNull(anchorDebondedRaw),
+                        })
+                      }
+                    />
                     <textarea
                       className="col-span-2 min-h-[70px] w-full rounded-lg border bg-white p-3 text-sm"
                       placeholder="Approval notes (optional)"
@@ -2828,7 +3049,8 @@ export const SiteLoggingElement: React.FC = () => {
                 </div>
               )}
 
-              {showSetupAdvanced && Boolean(designInput.suitability_test_required) && showSuitabilitySetup && (
+              {/* Suitability workflow is intentionally removed from field Setup UI (not used in current site workflow). */}
+              {false && (
                 <div className="rounded-lg border bg-zinc-50 p-3">
                   <div className="text-[11px] font-bold uppercase text-zinc-600">Suitability (optional)</div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
@@ -3188,18 +3410,18 @@ export const SiteLoggingElement: React.FC = () => {
                     <div className="col-span-2 rounded-lg border bg-zinc-50 p-2">
                       <div className="text-[11px] font-bold uppercase text-zinc-500">Drilling response</div>
                       <div className="mt-2 grid grid-cols-2 gap-2 text-[12px] text-zinc-700">
-                        {DRILLING_RESPONSES.map((r) => {
-                          const checked = newResponses.includes(r.id);
+                        {builderOptions.drilling_response.map((t) => {
+                          const checked = newResponses.includes(t);
                           return (
-                            <label key={r.id} className="flex items-center gap-2">
+                            <label key={t} className="flex items-center gap-2">
                               <input
                                 type="checkbox"
                                 checked={checked}
                                 onChange={(e) => {
-                                  setNewResponses((prev) => (e.target.checked ? [...prev, r.id] : prev.filter((x) => x !== r.id)));
+                                  setNewResponses((prev) => (e.target.checked ? [...prev, t] : prev.filter((x) => x !== t)));
                                 }}
                               />
-                              <span>{r.label}</span>
+                              <span>{t}</span>
                             </label>
                           );
                         })}
@@ -3553,18 +3775,23 @@ export const SiteLoggingElement: React.FC = () => {
                           <div className="col-span-2 rounded-lg border bg-white p-2">
                             <div className="text-[11px] font-bold uppercase text-zinc-500">Drilling response</div>
                             <div className="mt-2 grid grid-cols-2 gap-2 text-[12px] text-zinc-700">
-                              {DRILLING_RESPONSES.map((r) => {
-                                const checked = editResponses.includes(r.id);
+                              {Array.from(
+                                new Set([
+                                  ...builderOptions.drilling_response,
+                                  ...editResponses.map((r) => String(r).trim()).filter(Boolean),
+                                ])
+                              ).map((t) => {
+                                const checked = editResponses.includes(t);
                                 return (
-                                  <label key={r.id} className="flex items-center gap-2">
+                                  <label key={t} className="flex items-center gap-2">
                                     <input
                                       type="checkbox"
                                       checked={checked}
                                       onChange={(e) => {
-                                        setEditResponses((prev) => (e.target.checked ? [...prev, r.id] : prev.filter((x) => x !== r.id)));
+                                        setEditResponses((prev) => (e.target.checked ? [...prev, t] : prev.filter((x) => x !== t)));
                                       }}
                                     />
-                                    <span>{r.label}</span>
+                                    <span>{t}</span>
                                   </label>
                                 );
                               })}
@@ -3957,6 +4184,24 @@ export const SiteLoggingElement: React.FC = () => {
               </button>
               {referenceAdminMode && (
                 <button
+                  onClick={exportReferenceTemplate}
+                  className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-50"
+                  title="Export the Project maintained reference as a reusable JSON template (no drilling records/photos)."
+                >
+                  Export template
+                </button>
+              )}
+              {referenceAdminMode && (
+                <button
+                  onClick={startImportReferenceTemplate}
+                  className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-50"
+                  title="Import a JSON reference template (preview before applying)."
+                >
+                  Import template
+                </button>
+              )}
+              {referenceAdminMode && (
+                <button
                   onClick={() => void applySeedToProjectReference('reset_to_seed')}
                   disabled={!seededGroundReference}
                   className="rounded-lg bg-white px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 ring-1 ring-zinc-200 hover:bg-zinc-50 disabled:opacity-50"
@@ -3975,6 +4220,136 @@ export const SiteLoggingElement: React.FC = () => {
               )}
             </div>
           </div>
+
+          <input
+            ref={importRefTemplateInputRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={(e) => void onImportReferenceTemplateFile(e.target.files?.[0] ?? null)}
+          />
+
+          {referenceAdminMode && (
+            <div className="mt-3 rounded-lg border bg-zinc-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-col">
+                  <div className="text-[11px] font-bold uppercase text-zinc-700">Reference templates</div>
+                  <div className="text-[11px] text-zinc-600">Reusable project knowledge packages (ground model + phrase library + evidence notes).</div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={starterTemplateId}
+                    onChange={(e) => setStarterTemplateId(e.target.value)}
+                    className="min-w-[260px] rounded-lg border bg-white px-3 py-2 text-sm"
+                    title="Starter templates are editable after loading."
+                  >
+                    <option value="">Load starter template...</option>
+                    {SITE_LOGGING_STARTER_TEMPLATES.map((t) => (
+                      <option key={t.id} value={t.id}>{t.title}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={loadStarterReferenceTemplate}
+                    disabled={!starterTemplateId}
+                    className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200 disabled:opacity-50"
+                  >
+                    Load
+                  </button>
+                </div>
+              </div>
+
+              {pendingRefTemplate && (
+                <div className="mt-3 rounded-lg border bg-white p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex flex-col">
+                      <div className="text-sm font-bold text-zinc-800">Pending template: {pendingRefTemplate.template_name}</div>
+                      <div className="text-[11px] text-zinc-600">
+                        Preview then apply. Does not import drilling records, photos, verification, or closeout.
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={pendingRefTemplateMode}
+                        onChange={(e) => setPendingRefTemplateMode(e.target.value as any)}
+                        className="rounded-lg border bg-white px-3 py-2 text-sm"
+                        title="How to apply this template into the Project maintained reference."
+                      >
+                        <option value="merge">Apply mode: merge</option>
+                        <option value="replace">Apply mode: replace</option>
+                        <option value="phrases_only">Apply mode: phrases only</option>
+                        <option value="ground_only">Apply mode: ground model only</option>
+                      </select>
+                      <button
+                        onClick={() => setPendingRefTemplate(null)}
+                        className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => void applyPendingReferenceTemplate()}
+                        className="rounded-lg bg-indigo-600 px-3 py-2 text-[11px] font-bold uppercase text-white hover:bg-indigo-700"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                    <div className="rounded-lg border bg-zinc-50 p-2">
+                      <div className="text-[11px] uppercase text-zinc-500">Phrases</div>
+                      <div className="font-semibold text-zinc-800">{pendingRefTemplate.phrase_library.phrases.length}</div>
+                    </div>
+                    <div className="rounded-lg border bg-zinc-50 p-2">
+                      <div className="text-[11px] uppercase text-zinc-500">Calibrations</div>
+                      <div className="font-semibold text-zinc-800">{pendingRefTemplate.evidence.borehole_calibrations.length}</div>
+                    </div>
+                    <div className="rounded-lg border bg-zinc-50 p-2">
+                      <div className="text-[11px] uppercase text-zinc-500">Evidence notes</div>
+                      <div className="font-semibold text-zinc-800">{pendingRefTemplate.evidence.references.length}</div>
+                    </div>
+                    <div className="rounded-lg border bg-zinc-50 p-2">
+                      <div className="text-[11px] uppercase text-zinc-500">Ground units</div>
+                      <div className="font-semibold text-zinc-800">{pendingRefTemplate.ground_model.geotechnical_units.length}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <button
+                      onClick={() => setShowPendingRefTemplateDetails((v) => !v)}
+                      className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                    >
+                      {showPendingRefTemplateDetails ? 'Hide details' : 'Show details'}
+                    </button>
+                    <div className="text-[11px] text-zinc-600">Existing reference is unchanged until Apply is pressed.</div>
+                  </div>
+
+                  {showPendingRefTemplateDetails && (
+                    <div className="mt-3 grid grid-cols-1 gap-3">
+                      <div className="rounded-lg border bg-white p-2">
+                        <div className="text-[11px] font-bold uppercase text-zinc-600">Ground model summary</div>
+                        <div className="mt-1 text-[12px] text-zinc-700">
+                          Risks: {pendingRefTemplate.ground_model.risk_flags.length}; Above ToR: {pendingRefTemplate.ground_model.expected_material_above_tor.length}; Below ToR: {pendingRefTemplate.ground_model.expected_material_below_tor.length}; Notes: {String(pendingRefTemplate.ground_model.site_notes || '').trim() ? 'included' : 'none'}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border bg-white p-2">
+                        <div className="text-[11px] font-bold uppercase text-zinc-600">Phrase preview (first 12)</div>
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] text-zinc-700">
+                          {pendingRefTemplate.phrase_library.phrases.slice(0, 12).map((p, idx) => (
+                            <div key={idx}>
+                              <span className="font-mono text-[11px] text-zinc-500">{String(p.category)}:</span> {String(p.text)}
+                            </div>
+                          ))}
+                          {pendingRefTemplate.phrase_library.phrases.length > 12 && (
+                            <div className="text-[11px] text-zinc-500">…and {pendingRefTemplate.phrase_library.phrases.length - 12} more</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {!referenceAdminMode && (
             <div className="mt-3 grid grid-cols-1 gap-3">
@@ -4337,56 +4712,98 @@ export const SiteLoggingElement: React.FC = () => {
             />
             <div className="col-span-2 rounded-lg border bg-zinc-50 p-2">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Geotechnical units</div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[12px] text-zinc-700">
-                {GEOTECH_UNITS.map((unit) => {
-                  const selected = parseJsonArray(groundRefUnitsJson).includes(unit);
-                  return (
-                    <label key={unit} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={(e) => {
-                          const next = new Set(parseJsonArray(groundRefUnitsJson).map(String));
-                          if (e.target.checked) next.add(unit);
-                          else next.delete(unit);
-                          setGroundRefUnitsJson(JSON.stringify([...next]));
-                        }}
-                      />
-                      <span>{unit}</span>
-                    </label>
-                  );
-                })}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {parseJsonArray(groundRefUnitsJson).length === 0 && (
+                  <div className="text-sm text-zinc-500">No units recorded.</div>
+                )}
+                {parseJsonArray(groundRefUnitsJson).map((unit) => (
+                  <button
+                    key={String(unit)}
+                    onClick={() => {
+                      const next = parseJsonArray(groundRefUnitsJson).map(String).filter((u) => u !== String(unit));
+                      setGroundRefUnitsJson(JSON.stringify(next));
+                    }}
+                    className="rounded-full border bg-white px-3 py-1 text-[12px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                    title="Remove"
+                  >
+                    {String(unit)} <span className="text-zinc-400">×</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <input
+                  value={groundRefUnitDraft}
+                  onChange={(e) => setGroundRefUnitDraft(e.target.value)}
+                  className="flex-1 rounded-lg border bg-white px-3 py-2 text-sm"
+                  placeholder="Add unit (e.g. Colluvium)"
+                />
+                <button
+                  onClick={() => {
+                    const v = String(groundRefUnitDraft || '').trim();
+                    if (!v) return;
+                    const next = [...new Set([...parseJsonArray(groundRefUnitsJson).map(String), v].map((s) => s.trim()).filter(Boolean))];
+                    setGroundRefUnitsJson(JSON.stringify(next));
+                    setGroundRefUnitDraft('');
+                  }}
+                  className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                >
+                  Add
+                </button>
               </div>
             </div>
             <div className="col-span-2 rounded-lg border bg-zinc-50 p-2">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Site risk flags</div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[12px] text-zinc-700">
-                {SITE_RISK_FLAGS.map((flag) => {
-                  const selected = parseJsonArray(groundRefRiskFlagsJson).includes(flag);
-                  return (
-                    <label key={flag} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={(e) => {
-                          const next = new Set(parseJsonArray(groundRefRiskFlagsJson).map(String));
-                          if (e.target.checked) next.add(flag);
-                          else next.delete(flag);
-                          setGroundRefRiskFlagsJson(JSON.stringify([...next]));
-                        }}
-                      />
-                      <span>{flag}</span>
-                    </label>
-                  );
-                })}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {parseJsonArray(groundRefRiskFlagsJson).length === 0 && (
+                  <div className="text-sm text-zinc-500">No risks flagged.</div>
+                )}
+                {parseJsonArray(groundRefRiskFlagsJson).map((flag) => (
+                  <button
+                    key={String(flag)}
+                    onClick={() => {
+                      const next = parseJsonArray(groundRefRiskFlagsJson).map(String).filter((f) => f !== String(flag));
+                      setGroundRefRiskFlagsJson(JSON.stringify(next));
+                    }}
+                    className="rounded-full border bg-amber-50 px-3 py-1 text-[12px] font-semibold text-amber-900 hover:bg-amber-100"
+                    title="Remove"
+                  >
+                    {String(flag)} <span className="text-amber-700/60">×</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <input
+                  value={groundRefRiskDraft}
+                  onChange={(e) => setGroundRefRiskDraft(e.target.value)}
+                  className="flex-1 rounded-lg border bg-white px-3 py-2 text-sm"
+                  placeholder="Add risk (e.g. groundwater influence)"
+                />
+                <button
+                  onClick={() => {
+                    const v = String(groundRefRiskDraft || '').trim();
+                    if (!v) return;
+                    const next = [...new Set([...parseJsonArray(groundRefRiskFlagsJson).map(String), v].map((s) => s.trim()).filter(Boolean))];
+                    setGroundRefRiskFlagsJson(JSON.stringify(next));
+                    setGroundRefRiskDraft('');
+                  }}
+                  className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                >
+                  Add
+                </button>
               </div>
             </div>
             <textarea className="col-span-2 min-h-[70px] w-full rounded-lg border p-3 text-sm" placeholder="Reference notes"
               value={groundRefNotes} onChange={(e) => setGroundRefNotes(e.target.value)} />
           </div>
 
-          <div className="mt-4 rounded-lg border bg-zinc-50 p-3">
-            <div className="text-[11px] font-bold uppercase text-zinc-600">Borehole calibration</div>
+          <details className="mt-4 rounded-lg border bg-zinc-50 p-3">
+            <summary className="cursor-pointer select-none text-[11px] font-bold uppercase text-zinc-600">
+              Optional calibration evidence (collapsed)
+            </summary>
+            <div className="mt-2 text-[11px] text-zinc-600">
+              Borehole/geophysics highlights and investigation notes. Reference-only.
+            </div>
+            <div className="mt-3 text-[11px] font-bold uppercase text-zinc-600">Borehole calibration</div>
             <div className="mt-2 grid grid-cols-2 gap-2">
               <input value={newBhId} onChange={(e) => setNewBhId(e.target.value)} className="rounded-lg border px-3 py-2 text-sm" placeholder="BH id (e.g. BH01)" />
               <input value={newBhTor} onChange={(e) => setNewBhTor(e.target.value)} className="rounded-lg border px-3 py-2 text-sm" placeholder="BH ToR depth (m)" inputMode="decimal" />
@@ -4513,7 +4930,7 @@ export const SiteLoggingElement: React.FC = () => {
                 </tbody>
               </table>
             </div>
-          </div>
+          </details>
 
           <div className="mt-4 rounded-lg border bg-zinc-50 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -4672,12 +5089,15 @@ export const SiteLoggingElement: React.FC = () => {
 
           {referenceAdminMode && (
             <div className="mt-4 border-t pt-3">
-              <div className="text-[11px] font-semibold text-zinc-600">Other references (free JSON snippets)</div>
+              <div className="text-[11px] font-semibold text-zinc-600">Evidence / investigation notes (optional)</div>
+              <div className="mt-1 text-[11px] text-zinc-600">
+                Keep this lightweight. These notes are for calibration and context, not a raw database editor.
+              </div>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <input value={refType} onChange={(e) => setRefType(e.target.value)} className="rounded-lg border px-3 py-2 text-sm" placeholder="Type" />
                 <input value={refSource} onChange={(e) => setRefSource(e.target.value)} className="rounded-lg border px-3 py-2 text-sm" placeholder="Source label" />
-                <textarea value={refJson} onChange={(e) => setRefJson(e.target.value)} className="col-span-2 min-h-[90px] w-full rounded-lg border p-3 font-mono text-[12px]" placeholder="Reference JSON" />
-                <button onClick={createReference} className="col-span-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-bold text-white hover:bg-indigo-700">Add reference snippet</button>
+                <textarea value={refJson} onChange={(e) => setRefJson(e.target.value)} className="col-span-2 min-h-[90px] w-full rounded-lg border p-3 text-sm" placeholder="Note (plain text)" />
+                <button onClick={createReference} className="col-span-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-bold text-white hover:bg-indigo-700">Add note</button>
               </div>
               <div className="mt-3 grid grid-cols-1 gap-2">
                 {refs.map((r: any) => (
@@ -4685,7 +5105,7 @@ export const SiteLoggingElement: React.FC = () => {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex flex-col">
                         <div className="text-sm font-semibold text-zinc-800">{r.reference_type}{r.source_label ? ` / ${r.source_label}` : ''}</div>
-                        <pre className="mt-1 whitespace-pre-wrap text-[11px] text-zinc-700">{r.reference_json}</pre>
+                        <div className="mt-1 whitespace-pre-wrap text-[12px] text-zinc-700">{String(r.reference_json || '')}</div>
                       </div>
                       <button onClick={() => deleteReference(r.id)} className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200">Remove</button>
                     </div>
@@ -4753,6 +5173,90 @@ export const SiteLoggingElement: React.FC = () => {
               </div>
             </div>
 
+            {verificationSummary?.kind === 'micro_pile' && (
+              <div className="mt-3 rounded-lg border bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-bold uppercase text-zinc-500">As-built inputs</div>
+                  <div className="text-[11px] text-zinc-500">Entered here (not in Setup)</div>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <input
+                    className="rounded-lg border px-3 py-2 text-sm"
+                    placeholder="Base of casing depth (m)"
+                    inputMode="decimal"
+                    value={pileBaseCasingRaw}
+                    onChange={(e) => setPileBaseCasingRaw(e.target.value)}
+                    onBlur={() => setDesignInput({ ...designInput, casing_to_depth_m: parseNumberOrNull(pileBaseCasingRaw) })}
+                  />
+                  <input
+                    className="rounded-lg border px-3 py-2 text-sm"
+                    placeholder="Lowest U-bolt depth (m, optional)"
+                    inputMode="decimal"
+                    value={pileLowestUboltRaw}
+                    onChange={(e) => setPileLowestUboltRaw(e.target.value)}
+                    onBlur={() => setDesignInput({ ...designInput, lowest_ubolt_depth_m: parseNumberOrNull(pileLowestUboltRaw) })}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const base = parseNumberOrNull(pileBaseCasingRaw);
+                      const zone = parseNumberOrNull(pileUboltZoneRaw);
+                      if (base == null || zone == null) {
+                        alert('Enter base of casing depth and U-bolt zone allowance first (As-built inputs).');
+                        return;
+                      }
+                      const computed = base + zone;
+                      setPileLowestUboltRaw(computed.toFixed(2));
+                      setDesignInput({ ...designInput, lowest_ubolt_depth_m: computed });
+                    }}
+                    className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                  >
+                    Calc lowest U-bolt = base + allowance
+                  </button>
+                  <input
+                    className="rounded-lg border px-3 py-2 text-sm"
+                    placeholder="Final drilled depth (m, optional manual)"
+                    inputMode="decimal"
+                    value={pileFinalDepthRaw}
+                    onChange={(e) => setPileFinalDepthRaw(e.target.value)}
+                    onBlur={() => setDesignInput({ ...designInput, final_drilled_depth_m: parseNumberOrNull(pileFinalDepthRaw) })}
+                  />
+                </div>
+                <div className="mt-2 rounded-lg border bg-zinc-50 p-2 text-[11px] text-zinc-600">
+                  Rock condition evidence: <span className="font-semibold">{pileRockEvidence.note}</span>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <select
+                    value={String(designInput.governing_rock_condition || 'auto')}
+                    onChange={(e) => setDesignInput({ ...designInput, governing_rock_condition: e.target.value })}
+                    className="rounded-lg border px-3 py-2 text-sm"
+                  >
+                    <option value="auto">Governing rock condition: Auto (from logging)</option>
+                    <option value="hw">Governing rock condition: HW</option>
+                    <option value="mw">Governing rock condition: MW</option>
+                    <option value="mixed">Governing rock condition: mixed / review</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const v = pileSuggestedGoverningCondition.value;
+                      if (v) setDesignInput({ ...designInput, governing_rock_condition: v });
+                      else setDesignInput({ ...designInput, governing_rock_condition: 'mixed' });
+                    }}
+                    className="rounded-lg bg-zinc-100 px-3 py-2 text-[11px] font-bold uppercase text-zinc-700 hover:bg-zinc-200"
+                  >
+                    {pileSuggestedGoverningCondition.value
+                      ? `Use suggested: ${pileSuggestedGoverningCondition.value.toUpperCase()}`
+                      : 'Set basis to REVIEW'}
+                  </button>
+                </div>
+                <div className="mt-1 text-[11px] text-zinc-600">
+                  Suggested basis: <span className="font-semibold">{pileSuggestedGoverningCondition.value ? pileSuggestedGoverningCondition.value.toUpperCase() : 'none'}</span>{' '}
+                  <span className="text-zinc-500">({pileSuggestedGoverningCondition.reason})</span>
+                </div>
+              </div>
+            )}
+
             <div className="mt-3 rounded-lg border bg-zinc-50 p-3">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Status</div>
               <div className={`mt-1 inline-flex rounded-full px-3 py-1 text-xs font-bold uppercase ${
@@ -4772,7 +5276,7 @@ export const SiteLoggingElement: React.FC = () => {
             </div>
 
             {verificationSummary?.kind === 'micro_pile' && (
-              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div className={`mt-3 grid grid-cols-1 gap-3 ${showVerificationAdvanced ? 'lg:grid-cols-2' : 'lg:grid-cols-1'}`}>
                 <div className="rounded-lg border bg-white p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-[11px] font-bold uppercase text-zinc-500">Pile verification (field)</div>
@@ -4789,36 +5293,34 @@ export const SiteLoggingElement: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="rounded-lg border bg-zinc-50 p-3">
-                  <div className="text-[11px] font-bold uppercase text-zinc-600">Geometry summary</div>
-                  <div className="mt-2 text-sm text-zinc-700">
-                    <div>1. Ground / collar level</div>
-                    <div className="ml-4 text-zinc-600">(datum selected in Setup; depths measured downward)</div>
-                    <div className="mt-2">2. Top of rock</div>
-                    <div className="ml-4 text-zinc-600">
-                      {verificationSummary?.result?.actual_tor_depth_m != null ? `${Number(verificationSummary.result.actual_tor_depth_m).toFixed(2)} m` : '-'}
+                {showVerificationAdvanced && (
+                  <div className="rounded-lg border bg-zinc-50 p-3">
+                    <div className="text-[11px] font-bold uppercase text-zinc-600">Geometry summary (advanced)</div>
+                    <div className="mt-2 text-sm text-zinc-700">
+                      <div>1. Ground / collar level</div>
+                      <div className="ml-4 text-zinc-600">(datum selected in Setup; depths measured downward)</div>
+                      <div className="mt-2">2. Top of rock</div>
+                      <div className="ml-4 text-zinc-600">
+                        {verificationSummary?.result?.actual_tor_depth_m != null ? `${Number(verificationSummary.result.actual_tor_depth_m).toFixed(2)} m` : '-'}
+                      </div>
+                      <div className="mt-2">3. Base of casing</div>
+                      <div className="ml-4 text-zinc-600">
+                        {verificationSummary?.result?.base_of_casing_depth_m != null ? `${Number(verificationSummary.result.base_of_casing_depth_m).toFixed(2)} m` : '-'}
+                      </div>
+                      <div className="mt-2">4. U-bolt zone and lowest U-bolt</div>
+                      <div className="ml-4 text-zinc-600">
+                        Zone allowance: {verificationSummary?.result?.u_bolt_zone_length_m != null ? `${Number(verificationSummary.result.u_bolt_zone_length_m).toFixed(2)} m` : '-'}; lowest U-bolt: {verificationSummary?.result?.lowest_ubolt_depth_m != null ? `${Number(verificationSummary.result.lowest_ubolt_depth_m).toFixed(2)} m` : '-'}
+                      </div>
+                      <div className="mt-2">5. Final drilled depth / pile bottom</div>
+                      <div className="ml-4 text-zinc-600">
+                        {verificationSummary?.result?.actual_total_depth_m != null ? `${Number(verificationSummary.result.actual_total_depth_m).toFixed(2)} m` : '-'}
+                      </div>
                     </div>
-                    <div className="mt-2">3. Base of casing</div>
-                    <div className="ml-4 text-zinc-600">
-                      {verificationSummary?.result?.base_of_casing_depth_m != null ? `${Number(verificationSummary.result.base_of_casing_depth_m).toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-2">4. U-bolt zone and lowest U-bolt</div>
-                    <div className="ml-4 text-zinc-600">
-                      Zone allowance: {verificationSummary?.result?.u_bolt_zone_length_m != null ? `${Number(verificationSummary.result.u_bolt_zone_length_m).toFixed(2)} m` : '-'}; lowest U-bolt: {verificationSummary?.result?.lowest_ubolt_depth_m != null ? `${Number(verificationSummary.result.lowest_ubolt_depth_m).toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-2">5. Required anchorage below lowest U-bolt</div>
-                    <div className="ml-4 text-zinc-600">
-                      {verificationSummary?.result?.required_anchorage_below_ubolt_m != null ? `${Number(verificationSummary.result.required_anchorage_below_ubolt_m).toFixed(2)} m` : '-'}
-                    </div>
-                    <div className="mt-2">6. Final drilled depth / pile bottom</div>
-                    <div className="ml-4 text-zinc-600">
-                      {verificationSummary?.result?.actual_total_depth_m != null ? `${Number(verificationSummary.result.actual_total_depth_m).toFixed(2)} m` : '-'}
+                    <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-2 text-[11px] text-zinc-600">
+                      Reference diagram is guidance only and does not populate fields.
                     </div>
                   </div>
-                  <div className="mt-3 rounded-lg border border-zinc-200 bg-white p-2 text-[11px] text-zinc-600">
-                    Reference diagram is guidance only (available under Advanced). Calculations use only Setup inputs and logged depths.
-                  </div>
-                </div>
+                )}
               </div>
             )}
 

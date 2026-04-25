@@ -44,6 +44,21 @@ const inferActualTorFromIntervals = (intervals: SiteDrillingInterval[]): number 
   return null;
 };
 
+const inferRockConditionFromIntervals = (
+  intervals: SiteDrillingInterval[]
+): { hasHW: boolean; hasMW: boolean; suggested: 'hw' | 'mw' | 'mixed' | 'missing' } => {
+  let hasHW = false;
+  let hasMW = false;
+  for (const item of intervals) {
+    const w = (item.weathering_class || '').toLowerCase();
+    if (w === 'hw') hasHW = true;
+    if (w === 'mw') hasMW = true;
+  }
+  const suggested: 'hw' | 'mw' | 'mixed' | 'missing' =
+    hasHW && hasMW ? 'mixed' : hasHW ? 'hw' : hasMW ? 'mw' : 'missing';
+  return { hasHW, hasMW, suggested };
+};
+
 const sumWeakBandThicknessFromInterpretation = (interpretation: Partial<SiteInterpretation> | null): number => {
   // Interpretation weak bands are reference-only; treat missing/malformed as zero.
   try {
@@ -239,7 +254,16 @@ export const evaluateSiteVerification = ({
 
   if (['micro_pile', 'pile', 'permanent_casing'].includes(String(element.element_type))) {
     const requiredPlunge = num(designInput?.required_plunge_length_m) ?? 0;
-    const governingRockCondition = String(designInput?.governing_rock_condition || 'hw').toLowerCase();
+    const governingRockConditionRaw = String(designInput?.governing_rock_condition || 'auto').toLowerCase();
+    const rockEvidence = inferRockConditionFromIntervals(intervals);
+    const governingRockCondition =
+      governingRockConditionRaw === 'hw' || governingRockConditionRaw === 'mw' || governingRockConditionRaw === 'mixed'
+        ? (governingRockConditionRaw as 'hw' | 'mw' | 'mixed')
+        : (rockEvidence.suggested === 'missing' ? 'missing' : rockEvidence.suggested);
+    const governingRockConditionSource =
+      governingRockConditionRaw === 'hw' || governingRockConditionRaw === 'mw' || governingRockConditionRaw === 'mixed'
+        ? 'manual'
+        : 'auto';
     const requiredSocketHw = num(designInput?.required_socket_hw_m);
     const requiredSocketMw = num(designInput?.required_socket_mw_m);
     const legacyRequiredSocket = num(designInput?.required_socket_length_m);
@@ -275,6 +299,10 @@ export const evaluateSiteVerification = ({
         if (mx.length) return Math.max(...mx);
         return legacyRequiredSocket ?? null;
       }
+      if (governingRockCondition === 'missing') {
+        const mx = [requiredSocketHw, requiredSocketMw, legacyRequiredSocket].filter((v): v is number => v != null);
+        return mx.length ? Math.max(...mx) : null;
+      }
       return legacyRequiredSocket ?? requiredSocketHw ?? requiredSocketMw ?? null;
     })();
 
@@ -306,7 +334,10 @@ export const evaluateSiteVerification = ({
       maxDepthM != null && minimumRequiredFinalDepth != null ? (maxDepthM - minimumRequiredFinalDepth) : null;
 
     const plungePass = requiredPlunge <= 0 ? true : casingEmbedmentIntoRock != null ? casingEmbedmentIntoRock >= requiredPlunge : false;
-    const socketPass = requiredSocketM != null && grossSocketActual != null ? grossSocketActual >= requiredSocketM : false;
+    const socketPass =
+      governingRockCondition === 'missing'
+        ? false
+        : (requiredSocketM != null && grossSocketActual != null ? grossSocketActual >= requiredSocketM : false);
     const anchoragePass =
       requiredAnchorageBelowUboltM != null && anchorageBelowUboltActual != null
         ? anchorageBelowUboltActual >= requiredAnchorageBelowUboltM
@@ -323,7 +354,11 @@ export const evaluateSiteVerification = ({
     const reasons: string[] = [];
     const extraReviewTriggers: string[] = [];
     if (finalDepthOverride != null) extraReviewTriggers.push('Final drilled depth is provided manually (override).');
-    if (governingRockCondition === 'mixed') extraReviewTriggers.push('Governing rock condition is mixed/uncertain.');
+    if (governingRockCondition === 'mixed') extraReviewTriggers.push('Governing rock condition is mixed/uncertain (HW and MW both logged).');
+    if (governingRockCondition === 'missing') extraReviewTriggers.push('No HW/MW evidence in logging; governing rock condition must be selected.');
+    if (governingRockConditionSource === 'auto' && governingRockCondition !== 'missing') {
+      extraReviewTriggers.push(`Governing rock condition is suggested from logging: ${String(governingRockCondition).toUpperCase()}.`);
+    }
     if (weakBandDeductionRequired) extraReviewTriggers.push('Weak band deduction is enabled (review deductions).');
     if (lowestUboltSource === 'calculated') extraReviewTriggers.push('Lowest U-bolt depth is assumed from base of casing + allowance.');
     if (legacyRequiredSocket != null && (requiredSocketHw == null || requiredSocketMw == null)) extraReviewTriggers.push('Using legacy socket requirement (single value).');
@@ -341,7 +376,7 @@ export const evaluateSiteVerification = ({
 
     if (!plungePass) reasons.push('Casing plunge into rock is below required.');
     if (!anchoragePass) reasons.push('Anchorage below lowest U-bolt is below required.');
-    if (!socketPass) reasons.push('Rock socket / embedment is below required.');
+    if (governingRockCondition !== 'missing' && !socketPass) reasons.push('Rock socket / embedment is below required.');
     if (!depthPass) reasons.push('Final drilled depth is below the governing minimum required depth.');
     if (!overdrillPass) reasons.push('Overdrill exceeds allowable limit.');
     if (!cleanOutPass) reasons.push('Clean-out is required but not recorded.');
@@ -392,7 +427,12 @@ export const evaluateSiteVerification = ({
         },
         {
           label: 'Actual rock socket / embedment length',
-          design: requiredSocketM != null ? `${requiredSocketM.toFixed(2)} m (${governingRockCondition.toUpperCase()})` : '-',
+          design:
+            governingRockCondition === 'missing'
+              ? `Select basis. HW: ${requiredSocketHw != null ? requiredSocketHw.toFixed(2) : '-'} m; MW: ${requiredSocketMw != null ? requiredSocketMw.toFixed(2) : '-'} m`
+              : requiredSocketM != null
+                ? `${requiredSocketM.toFixed(2)} m (gov: ${String(governingRockCondition).toUpperCase()})`
+                : '-',
           actual: grossSocketActual != null ? `${grossSocketActual.toFixed(2)} m` : '-',
         },
         {
@@ -416,6 +456,9 @@ export const evaluateSiteVerification = ({
       result: {
         required_plunge_length_m: requiredPlunge,
         governing_rock_condition: governingRockCondition,
+        governing_rock_condition_source: governingRockConditionSource,
+        rock_evidence_hw: rockEvidence.hasHW,
+        rock_evidence_mw: rockEvidence.hasMW,
         required_socket_hw_m: requiredSocketHw,
         required_socket_mw_m: requiredSocketMw,
         required_socket_length_m: requiredSocketM,
