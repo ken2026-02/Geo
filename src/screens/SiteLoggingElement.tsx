@@ -51,6 +51,7 @@ import {
 import { deleteBlob, getBlob, putBlob } from '../media/mediaStore';
 import {
   SITE_LOGGING_PHRASE_BASE_CATEGORIES,
+  isFieldLogSentence,
   normalizePhraseCategory,
   normalizePhraseText,
   normalizePhraseTextKey,
@@ -253,11 +254,6 @@ export const SiteLoggingElement: React.FC = () => {
   const [designType, setDesignType] = useState('Default');
   // Setup is field-first; no type override or reference-RL selector in normal UI.
   const [designInput, setDesignInput] = useState<any>({
-    // Workflow flags (stored in design JSON; no schema changes)
-    trial_hole: false,
-    trial_hole_note: '',
-    suitability_test_required: false,
-
     design_length_to_rock_m: null,
     design_anchorage_length_m: null,
     design_bonded_length_m: null,
@@ -288,13 +284,6 @@ export const SiteLoggingElement: React.FC = () => {
     horizontal_bearing: '',
     approval_notes: '',
     bar_id: '',
-
-    // Suitability (optional section; stored only when enabled)
-    cycle_schedule: [],
-    suitability_measurements: [], // { load_kN, time_min, deformation_mm, note }
-    test_complete: false,
-    notify_designer_required: false,
-    test_note: '',
   });
   const [showSetupAdvanced, setShowSetupAdvanced] = useState(false);
 
@@ -422,6 +411,8 @@ export const SiteLoggingElement: React.FC = () => {
     };
   }, [groundRefReferenceObj]);
   const [groundRefUnitsJson, setGroundRefUnitsJson] = useState('[]');
+  // Legacy optional depth cues (ToR/velocity) are still stored in DB for compatibility,
+  // but are no longer shown in the field/admin UI (site workflow does not use them).
   const [groundRefExpectedTorMin, setGroundRefExpectedTorMin] = useState<string>('');
   const [groundRefExpectedTorMax, setGroundRefExpectedTorMax] = useState<string>('');
   const [groundRefRefVelocity, setGroundRefRefVelocity] = useState<string>('1600');
@@ -644,6 +635,7 @@ export const SiteLoggingElement: React.FC = () => {
 
       const uniq = new Map<string, { id: string; text: string; siteSpecific: boolean; score: number }>();
       for (const c of cands) {
+        if (base === 'common_phrase' && !isFieldLogSentence(c.text)) continue;
         if (!uniq.has(c.text)) {
           const ord = orderRank.has(c.id) ? (orderRank.get(c.id)! >= 0 ? 10_000 - orderRank.get(c.id)! : 0) : 0;
           uniq.set(c.text, { id: c.id, text: c.text, siteSpecific: c.siteSpecific, score: scoreFor(base, c.text, c.siteSpecific) + ord * 10 });
@@ -653,6 +645,7 @@ export const SiteLoggingElement: React.FC = () => {
       const hist = phraseUsage.get(base);
       if (hist) {
         for (const [t, stat] of hist.entries()) {
+          if (base === 'common_phrase' && !isFieldLogSentence(t)) continue;
           if (!uniq.has(t)) uniq.set(t, { id: `hist:${t}`, text: t, siteSpecific: true, score: 50_000 + stat.count * 800 });
         }
       }
@@ -679,19 +672,6 @@ export const SiteLoggingElement: React.FC = () => {
 
   const sentencePatternSuggestions = useMemo(() => {
     // Full-sentence patterns (learning-driven). Prefer type-specific and site-specific ones.
-    const isFieldLogSentence = (raw: string) => {
-      const s = String(raw || '').trim();
-      if (!s) return false;
-      const t = s.toLowerCase();
-      // Exclude report/calibration/reference notes. These belong in Reference/Interpretation, not final log lines.
-      if (t.includes('borehole') || t.includes('geophys') || t.includes('geophysics')) return false;
-      if (t.includes('velocity') || t.includes('m/s') || t.includes('srt')) return false;
-      if (t.includes('reference:') || t.includes('word report') || t.includes('report extract')) return false;
-      if (/\bbh\d+\b/.test(t)) return false;
-      if (t.includes('tor around') || t.includes('tor =') || t.includes('tor:')) return false;
-      return true;
-    };
-
     const allowedCats = new Set([
       `sentence_pattern@${phraseElementType}`,
       'sentence_pattern',
@@ -809,6 +789,39 @@ export const SiteLoggingElement: React.FC = () => {
 
     if (category === 'observed_material') setNewMatObs(v);
     if (category === 'interpreted_material') setNewMatInt(v);
+    if (category === 'weathering') {
+      const norm = v.toLowerCase().replace(/\s+/g, ' ').trim();
+      const map: Record<string, typeof newWeathering> = {
+        rs: 'rs',
+        residual: 'rs',
+        xw: 'xw',
+        'extremely weathered': 'xw',
+        hw: 'hw',
+        'highly weathered': 'hw',
+        mw: 'mw',
+        'moderately weathered': 'mw',
+        sw: 'sw',
+        'slightly weathered': 'sw',
+        fr: 'fr',
+        fresh: 'fr',
+      };
+      const next = map[norm] ?? (map[norm.replace(/^wth:\s*/i, '')] as any);
+      if (next) setNewWeathering(next as any);
+    }
+    if (category === 'rock_type') {
+      const norm = v.toLowerCase().replace(/\s+/g, ' ').trim();
+      const map: Record<string, typeof newRockType> = {
+        argillite: 'argillite',
+        greywacke: 'greywacke',
+        graywacke: 'greywacke',
+        granodiorite: 'granodiorite',
+        arenite: 'arenite',
+        unknown: 'unknown_rock',
+        'unknown rock': 'unknown_rock',
+      };
+      const next = map[norm];
+      if (next) setNewRockType(next as any);
+    }
     if (category === 'colour') setPhraseSel((prev) => ({ ...prev, colour: v }));
     if (category === 'modifier') setPhraseSel((prev) => ({ ...prev, modifier: v }));
     if (category === 'common_phrase') setPhraseSel((prev) => ({ ...prev, common_phrase: v }));
@@ -1485,6 +1498,7 @@ export const SiteLoggingElement: React.FC = () => {
       setRefs(siteGroundReferenceRepo.listBySite(s.id));
       const gr: any = siteGroundReferenceRepo.getGroundReferenceBySite(s.id);
       setGroundRefUnitsJson(gr?.geotechnical_units_json ?? '[]');
+      // Legacy optional depth cues: keep loaded for compatibility/export, but not shown in UI.
       setGroundRefExpectedTorMin(gr?.expected_tor_min_m != null ? String(gr.expected_tor_min_m) : '');
       setGroundRefExpectedTorMax(gr?.expected_tor_max_m != null ? String(gr.expected_tor_max_m) : '');
       setGroundRefRefVelocity(gr?.reference_tor_velocity_ms != null ? String(gr.reference_tor_velocity_ms) : '1600');
@@ -2389,6 +2403,12 @@ export const SiteLoggingElement: React.FC = () => {
 
   const createReference = async () => {
     if (!element) return;
+    // Prevent adding internal/system reference types via the generic "Add note" UI.
+    // GroundReference is reserved for the project-maintained knowledge base record.
+    if (String(refType || '').trim() === 'GroundReference') {
+      alert('This reference type is system-managed and cannot be created here.');
+      return;
+    }
     await siteGroundReferenceRepo.create({
       project_id: element.project_id,
       site_id: element.site_id,
@@ -3050,7 +3070,7 @@ export const SiteLoggingElement: React.FC = () => {
               )}
 
               {/* Suitability workflow is intentionally removed from field Setup UI (not used in current site workflow). */}
-              {false && (
+              {false && null /*
                 <div className="rounded-lg border bg-zinc-50 p-3">
                   <div className="text-[11px] font-bold uppercase text-zinc-600">Suitability (optional)</div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
@@ -3206,7 +3226,7 @@ export const SiteLoggingElement: React.FC = () => {
                       value={designInput.test_note ?? ''} onChange={(e) => setDesignInput({ ...designInput, test_note: e.target.value })} />
                   </div>
                 </div>
-              )}
+              */ }
 
               <textarea className="min-h-[80px] w-full rounded-lg border p-3 text-sm" placeholder="Approval notes"
                 value={designInput.approval_notes ?? ''} onChange={(e) => setDesignInput({ ...designInput, approval_notes: e.target.value })} />
@@ -4328,7 +4348,7 @@ export const SiteLoggingElement: React.FC = () => {
                       <div className="rounded-lg border bg-white p-2">
                         <div className="text-[11px] font-bold uppercase text-zinc-600">Ground model summary</div>
                         <div className="mt-1 text-[12px] text-zinc-700">
-                          Risks: {pendingRefTemplate.ground_model.risk_flags.length}; Above ToR: {pendingRefTemplate.ground_model.expected_material_above_tor.length}; Below ToR: {pendingRefTemplate.ground_model.expected_material_below_tor.length}; Notes: {String(pendingRefTemplate.ground_model.site_notes || '').trim() ? 'included' : 'none'}
+                          Risks: {pendingRefTemplate.ground_model.risk_flags.length}; Upper profile notes: {pendingRefTemplate.ground_model.expected_material_above_tor.length}; Lower profile notes: {pendingRefTemplate.ground_model.expected_material_below_tor.length}; Site notes: {String(pendingRefTemplate.ground_model.site_notes || '').trim() ? 'included' : 'none'}
                         </div>
                       </div>
                       <div className="rounded-lg border bg-white p-2">
@@ -4425,10 +4445,10 @@ export const SiteLoggingElement: React.FC = () => {
               </div>
 
               <div className="rounded-lg border bg-white p-3">
-                <div className="text-[11px] font-bold uppercase text-zinc-600">1) Site ground summary</div>
+                <div className="text-[11px] font-bold uppercase text-zinc-600">1) Ground model (guidance only)</div>
                 <div className="mt-2 grid grid-cols-1 gap-3">
                   <div>
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">Expected materials</div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Common materials (from reports + past logs)</div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {parseJsonArray(groundRefUnitsJson).length === 0 && <div className="text-sm text-zinc-500">No units recorded for this site.</div>}
                       {parseJsonArray(groundRefUnitsJson).map((u) => (
@@ -4438,32 +4458,6 @@ export const SiteLoggingElement: React.FC = () => {
                       ))}
                     </div>
                   </div>
-                  <div>
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">Expected rock type</div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {builderOptions.rock_type.length === 0 && <div className="text-sm text-zinc-500">No rock type phrases recorded.</div>}
-                      {builderOptions.rock_type.slice(0, 8).map((t) => (
-                        <span key={t} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">{t}</span>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] font-bold uppercase text-zinc-500">Expected weathering profile</div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {builderOptions.weathering.length === 0 && <div className="text-sm text-zinc-500">No weathering phrases recorded.</div>}
-                      {builderOptions.weathering.slice(0, 8).map((t) => (
-                        <span key={t} className="rounded-full bg-zinc-100 px-3 py-1 text-[12px] font-semibold text-zinc-700">{t}</span>
-                      ))}
-                    </div>
-                  </div>
-                  {(groundRefExpectedTorMin || groundRefExpectedTorMax) && (
-                    <div>
-                      <div className="text-[11px] font-bold uppercase text-zinc-500">Expected ToR / rock entry range</div>
-                      <div className="mt-2 rounded-lg border bg-zinc-50 p-2 text-[12px] font-semibold text-zinc-800">
-                        {groundRefExpectedTorMin || '?'}–{groundRefExpectedTorMax || '?'} m
-                      </div>
-                    </div>
-                  )}
                   <div>
                     <div className="text-[11px] font-bold uppercase text-zinc-500">Key site risks</div>
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -4486,6 +4480,171 @@ export const SiteLoggingElement: React.FC = () => {
                 </div>
               </div>
 
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-[11px] font-bold uppercase text-zinc-600">2) Logging library (tap to apply)</div>
+                <div className="mt-2 grid grid-cols-1 gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Observed material</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.observed_material.slice(0, 10).map((t) => (
+                        <button
+                          key={`obs-${t}`}
+                          onClick={() => applyReferencePhraseToLogging('observed_material', t)}
+                          className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                          title="Apply to current interval (Observed)"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                      {builderOptions.observed_material.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Interpreted material</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.interpreted_material.slice(0, 10).map((t) => (
+                        <button
+                          key={`int-${t}`}
+                          onClick={() => applyReferencePhraseToLogging('interpreted_material', t)}
+                          className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                          title="Apply to current interval (Interpreted)"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                      {builderOptions.interpreted_material.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">Rock type</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {builderOptions.rock_type.slice(0, 10).map((t) => (
+                          <button
+                            key={`rock-${t}`}
+                            onClick={() => applyReferencePhraseToLogging('rock_type', t)}
+                            className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                            title="Apply to current interval (Rock type)"
+                          >
+                            {t}
+                          </button>
+                        ))}
+                        {builderOptions.rock_type.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">Weathering</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {builderOptions.weathering.slice(0, 10).map((t) => (
+                          <button
+                            key={`wth-${t}`}
+                            onClick={() => applyReferencePhraseToLogging('weathering', t)}
+                            className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                            title="Apply to current interval (Weathering)"
+                          >
+                            {t}
+                          </button>
+                        ))}
+                        {builderOptions.weathering.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">Colour</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {builderOptions.colour.slice(0, 8).map((t) => (
+                          <button
+                            key={`col-${t}`}
+                            onClick={() => applyReferencePhraseToLogging('colour', t)}
+                            className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                            title="Apply to phrase builder (Colour)"
+                          >
+                            {t}
+                          </button>
+                        ))}
+                        {builderOptions.colour.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-bold uppercase text-zinc-500">Modifiers</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {builderOptions.modifier.slice(0, 10).map((t) => (
+                          <button
+                            key={`mod-${t}`}
+                            onClick={() => applyReferencePhraseToLogging('modifier', t)}
+                            className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                            title="Apply to phrase builder (Modifier)"
+                          >
+                            {t}
+                          </button>
+                        ))}
+                        {builderOptions.modifier.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Conditions (water / recovery / drilling response)</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.water.slice(0, 6).map((t) => (
+                        <button
+                          key={`water-${t}`}
+                          onClick={() => applyReferencePhraseToLogging('water', t)}
+                          className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                          title="Apply to current interval (Water)"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                      {builderOptions.recovery.slice(0, 6).map((t) => (
+                        <button
+                          key={`rec-${t}`}
+                          onClick={() => applyReferencePhraseToLogging('recovery', t)}
+                          className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                          title="Apply to current interval (Recovery)"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                      {builderOptions.drilling_response.slice(0, 6).map((t) => (
+                        <button
+                          key={`resp-${t}`}
+                          onClick={() => applyReferencePhraseToLogging('drilling_response', t)}
+                          className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                          title="Apply to current interval (Drilling response)"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                      {builderOptions.water.length === 0 &&
+                        builderOptions.recovery.length === 0 &&
+                        builderOptions.drilling_response.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] font-bold uppercase text-zinc-500">Common final phrases</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {builderOptions.common_phrase.slice(0, 10).map((t) => (
+                        <button
+                          key={`common-${t}`}
+                          onClick={() => applyReferencePhraseToLogging('common_phrase', t)}
+                          className="rounded-full border px-3 py-1 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50"
+                          title="Apply to phrase builder (Common phrase)"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                      {builderOptions.common_phrase.length === 0 && <div className="text-sm text-zinc-500">No phrases yet.</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {false && null /* legacy duplicate logging-library block (removed in favour of the compact 4-block Reference layout)
               <div className="rounded-lg border bg-white p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-[11px] font-bold uppercase text-zinc-600">2) Logging description library</div>
@@ -4614,6 +4773,7 @@ export const SiteLoggingElement: React.FC = () => {
                   </div>
                 </div>
               </div>
+              */ }
 
               <div className="rounded-lg border bg-white p-3">
                 <div className="flex items-center justify-between gap-2">
@@ -4689,27 +4849,6 @@ export const SiteLoggingElement: React.FC = () => {
 
           {referenceAdminMode && (<>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <input
-              className="rounded-lg border px-3 py-2 text-sm"
-              placeholder="Expected ToR / rock entry min (m, optional)"
-              inputMode="decimal"
-              value={groundRefExpectedTorMin}
-              onChange={(e) => setGroundRefExpectedTorMin(e.target.value)}
-            />
-            <input
-              className="rounded-lg border px-3 py-2 text-sm"
-              placeholder="Expected ToR / rock entry max (m, optional)"
-              inputMode="decimal"
-              value={groundRefExpectedTorMax}
-              onChange={(e) => setGroundRefExpectedTorMax(e.target.value)}
-            />
-            <input
-              className="col-span-2 rounded-lg border px-3 py-2 text-sm"
-              placeholder="Reference velocity (m/s, optional)"
-              inputMode="decimal"
-              value={groundRefRefVelocity}
-              onChange={(e) => setGroundRefRefVelocity(e.target.value)}
-            />
             <div className="col-span-2 rounded-lg border bg-zinc-50 p-2">
               <div className="text-[11px] font-bold uppercase text-zinc-500">Geotechnical units</div>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -5094,7 +5233,13 @@ export const SiteLoggingElement: React.FC = () => {
                 Keep this lightweight. These notes are for calibration and context, not a raw database editor.
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2">
-                <input value={refType} onChange={(e) => setRefType(e.target.value)} className="rounded-lg border px-3 py-2 text-sm" placeholder="Type" />
+                <select value={refType} onChange={(e) => setRefType(e.target.value)} className="rounded-lg border px-3 py-2 text-sm">
+                  <option value="GeotechUnit">Geotech unit</option>
+                  <option value="BoreholeNote">Borehole note</option>
+                  <option value="GeophysicsNote">Geophysics note</option>
+                  <option value="SiteRisk">Site risk note</option>
+                  <option value="GeneralNote">General note</option>
+                </select>
                 <input value={refSource} onChange={(e) => setRefSource(e.target.value)} className="rounded-lg border px-3 py-2 text-sm" placeholder="Source label" />
                 <textarea value={refJson} onChange={(e) => setRefJson(e.target.value)} className="col-span-2 min-h-[90px] w-full rounded-lg border p-3 text-sm" placeholder="Note (plain text)" />
                 <button onClick={createReference} className="col-span-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-bold text-white hover:bg-indigo-700">Add note</button>

@@ -47,3 +47,17 @@ export const isValidPhraseBaseCategory = (cat: string): cat is SiteLoggingPhrase
   return Boolean(base) && BASE_CATEGORY_SET.has(base);
 };
 
+// Boundary helpers: keep "reference notes" out of field logging sentence suggestions.
+// These are heuristics (not a schema contract).
+export const isFieldLogSentence = (raw: string): boolean => {
+  const s = String(raw || '').trim();
+  if (!s) return false;
+  const t = s.toLowerCase();
+  // Exclude report/calibration/reference notes. These belong in Reference/Evidence, not final log lines.
+  if (t.includes('borehole') || t.includes('geophys') || t.includes('geophysics')) return false;
+  if (t.includes('velocity') || t.includes('m/s') || t.includes('srt')) return false;
+  if (t.includes('reference:') || t.includes('report extract') || t.includes('word report')) return false;
+  if (/\bbh\d+\b/.test(t)) return false;
+  if (t.includes('tor around') || t.includes('tor =') || t.includes('tor:')) return false;
+  return true;
+};

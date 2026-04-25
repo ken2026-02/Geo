@@ -269,7 +269,7 @@ export const evaluateSiteVerification = ({
     const legacyRequiredSocket = num(designInput?.required_socket_length_m);
     const socketBasis = String(designInput?.socket_basis || 'gross_socket');
     const overdrillAllowance = num(designInput?.max_overdrill_m) ?? 0;
-    const casingToDepth = num(designInput?.casing_to_depth_m) ?? null; // "Base of casing depth" in Setup UI
+    const casingToDepth = num(designInput?.casing_to_depth_m) ?? null; // "Base of casing depth" (as-built input in Verification)
     const casingType = String(designInput?.casing_type || '').trim() || null;
 
     const finalDepthOverride = num(designInput?.final_drilled_depth_m);
